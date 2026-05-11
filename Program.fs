@@ -1,19 +1,20 @@
-﻿// For more information see https://aka.ms/fsharp-console-apps
-
-open System
+﻿open System
 open System.IO
 open fscc
 
 let args = Environment.GetCommandLineArgs ()
 
-let printAST filename =
+let getAssembly filename =
     File.ReadAllText filename
     |> Lexer.fromString
     |> Lexer.runLexer
     |> Result.defaultValue [Lexer.EOF]
     |> Parser.parseProgram
-    |> Result.map Assembly.programToAssemblyProgram
-    |> printfn "%A"
+    |> Result.map Assembly.toAssemblyProgram
+    |> Result.map Assembly.emitProgram
 
-if args.Length >= 2 then printAST args[1]
-else printfn "No input file!"
+if args.Length >= 2 then
+    match getAssembly args[1] with
+    | Error value -> eprintfn $"Error %A{value}"
+    | Ok assembly -> printfn $"%s{assembly}"
+else eprintfn "No input file!"
