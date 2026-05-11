@@ -12,6 +12,7 @@ let printAST filename =
     |> Lexer.runLexer
     |> Result.defaultValue [Lexer.EOF]
     |> Parser.parseProgram
+    |> Result.map Assembly.programToAssemblyProgram
     |> printfn "%A"
 
 if args.Length >= 2 then printAST args[1]
