@@ -23,7 +23,9 @@ type FunctionDefinition =
 
 type Program = Program of FunctionDefinition
 
-type ParserError = Message of string
+type ParserError =
+    | Message of string
+    | LexError of LexerError
 
 let suddenEOF = Message "Sudden end of file"
 
