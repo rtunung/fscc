@@ -15,6 +15,12 @@ let getAssembly filename =
 
 if args.Length >= 2 then
     match getAssembly args[1] with
-    | Error value -> eprintfn $"Error %A{value}"
-    | Ok assembly -> printfn $"%s{assembly}"
-else eprintfn "No input file!"
+    | Error value ->
+        eprintfn $"Error %A{value}"
+        Environment.Exit(-1)
+    | Ok assembly ->
+        printfn $"%s{assembly}"
+        Environment.Exit(0)
+else
+    Environment.Exit(-1)
+    eprintfn "No input file!"
