@@ -18,10 +18,8 @@ type Expression =
 type Statement =
     | Return of Expression
 
-type FunctionDefinition = Function of {|
-    name : Identifier
-    body : Statement
-|}
+type FunctionDefinition =
+    Function of {| name : Identifier; body : Statement |}
 
 type Program = Program of FunctionDefinition
 
@@ -74,7 +72,10 @@ let parseFunction tokens =
         return Function {| name = identifier; body = statement|}, t
     }
 
-let parseProgram tokens =
-    match parseFunction tokens with
-    | Error error -> Error error
-    | Ok (func, nextTokens) -> Ok (Program func, nextTokens)
+let parseProgram tokens : Result<Program, ParserError> =
+    let prog, nextTokens =
+        match parseFunction tokens with
+        | Error error -> Error error, tokens
+        | Ok (func, nextTokens) -> Ok (Program func), nextTokens
+    if (List.isEmpty nextTokens) || (Result.isError prog) then prog
+    else Error <| Message "Unexpected tokens after the end of program"
