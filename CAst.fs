@@ -1,4 +1,4 @@
-module fscc.Parser
+module fscc.CAst
 
 open FsToolkit.ErrorHandling
 open Lexer
@@ -6,20 +6,26 @@ open Lexer
 // <program> ::= <function>
 // <function> ::= "int" <identifier> "(" "void" ")" "{" <statement> "}"
 // <statement> ::= "return" <exp> ";"
-// <exp> ::= <int>
+// <exp> ::= <int> | <unop> <exp> | "(" <exp> ")"
+// <unop> ::= "-" | "~"
 // <identifier> ::= ? An identifier token ?
 // <int> ::= ? A constant token ?
 
-type Identifier = Identifier of string
+type Identifier = string
+
+type UnaryOperator =
+    | Complement
+    | Negate
 
 type Expression =
     | Constant of int
+    | Unary of UnaryOperator * Expression
 
 type Statement =
     | Return of Expression
 
 type FunctionDefinition =
-    Function of {| name : Identifier; body : Statement |}
+    Function of {| name : Identifier; instructions: Statement |}
 
 type Program = Program of FunctionDefinition
 
@@ -35,20 +41,30 @@ let expectToken expected tokenList =
     | token :: _ -> Error <| Message $"Expected '{expected}' got '{token}'"
     | [] -> Error suddenEOF
 
-let parseConstant tokens =
-    match tokens with
-    | Lexer.Constant value :: rest -> Ok (Constant value, rest)
-    | token :: rest -> Error <| Message $"Expected integer constant got '{token}'"
-    | [] -> Error suddenEOF
-
 let parseIdentifier tokens =
     match tokens with
     | Lexer.Identifier value :: rest -> Ok (Identifier value, rest)
     | token :: _ -> Error <| Message $"Expected identifier got '{token}'"
     | [] -> Error suddenEOF
 
-let parseExpression tokens =
-    parseConstant tokens
+let rec parseExpression tokens =
+    match tokens with
+    | Lexer.Constant value :: rest -> Ok (Constant value, rest)
+    | Tilde :: rest -> result {
+        let! exp, restTokens = parseExpression rest
+        return Unary (Complement, exp), restTokens
+        }
+    | Minus :: rest -> result {
+        let! exp, restTokens = parseExpression rest
+        return Unary (Negate, exp), restTokens
+        }
+    | ParenOpen :: rest -> result {
+        let! exp, restTokens = parseExpression rest
+        let! restTokens = expectToken ParenClose restTokens
+        return exp, restTokens
+        }
+    | other :: _ -> Error <| Message $"Malformed expression: found '{other}' instead of an correct expression token"
+    | [] -> Error suddenEOF
 
 let parseReturn tokens =
     result {
@@ -71,7 +87,7 @@ let parseFunction tokens =
         let! t = expectToken BraceOpen t
         let! statement, t = parseStatement t
         let! t = expectToken BraceClose t
-        return Function {| name = identifier; body = statement|}, t
+        return Function {| name = identifier; instructions = statement|}, t
     }
 
 let parseProgram tokens : Result<Program, ParserError> =

@@ -18,6 +18,9 @@ type Token =
     | BraceOpen
     | BraceClose
     | Semicolon
+    | Tilde
+    | Minus
+    | Decrement
     | EOF
 
 type LexerError = {
@@ -80,6 +83,12 @@ let nextToken lexer =
     | Some ')' -> Ok ( ParenClose, advance lexer )
     | Some '{' -> Ok ( BraceOpen, advance lexer )
     | Some '}' -> Ok ( BraceClose, advance lexer )
+    | Some '~' -> Ok ( Tilde, advance lexer )
+    | Some '-' ->
+        let advLexer = advance lexer
+        match peek advLexer with
+        | Some '-' -> Ok ( Decrement, advance advLexer)
+        | _ -> Ok ( Minus, advLexer )
     | Some chr when Char.IsDigit(chr) ->  lexConstant lexer
     | Some chr when Char.IsLetter(chr) -> Ok <| lexIdentifierKeyword lexer
     | Some unknownChar -> Error <| makeLexerError lexer $"Unexpected character '{unknownChar}'"
