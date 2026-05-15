@@ -62,7 +62,6 @@ let fromProgram program =
     | Tacky.Program func -> Program <| fromFunction func
     
     
-    
 // Second compiler pass: converting pseudo addresses to stack addresses
 
 let replacePseudoOperand state operand=
@@ -92,13 +91,14 @@ let updateRegisters instructions =
             let updatedSrc, (updatedMap, updatedCounter) = replacePseudoOperand (map, counter) mov.src
             let updatedDst, (updatedMap, updatedCounter) = replacePseudoOperand (updatedMap, updatedCounter) mov.dst
             Mov {| src = updatedSrc; dst = updatedDst |}, (updatedMap, updatedCounter)
-        | other -> other, (map, counter)
-        
+        | Ret -> Ret, (map, counter)
+        | AllocateStack i -> AllocateStack i, (map, counter)
+
     let updatedInstructions, (_, stackSize) =
         instructions
         |> List.mapFold updatePseudo (Map.empty, 0)
         
-    // Instructions, that have two stack operands are invalid and need to be replaced with valid instructions
+    // Instructions that have two stack operands are invalid and need to be replaced with valid instructions
     let updateInvalidInstructions currentInstr =
         match currentInstr with
         | Mov mov ->

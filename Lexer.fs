@@ -21,6 +21,11 @@ type Token =
     | Tilde
     | Minus
     | Decrement
+    | Plus
+    | Increment
+    | Asterisk
+    | Slash
+    | Percentage
     | EOF
 
 type LexerError = {
@@ -84,11 +89,19 @@ let nextToken lexer =
     | Some '{' -> Ok ( BraceOpen, advance lexer )
     | Some '}' -> Ok ( BraceClose, advance lexer )
     | Some '~' -> Ok ( Tilde, advance lexer )
+    | Some '*' -> Ok ( Asterisk, advance lexer )
+    | Some '/' -> Ok ( Slash, advance lexer )
+    | Some '%' -> Ok ( Percentage, advance lexer )
     | Some '-' ->
         let advLexer = advance lexer
         match peek advLexer with
         | Some '-' -> Ok ( Decrement, advance advLexer)
         | _ -> Ok ( Minus, advLexer )
+    | Some '+' ->
+        let advLexer = advance lexer
+        match peek advLexer with
+        | Some '+' -> Ok ( Increment, advance advLexer)
+        | _ -> Ok ( Plus, advLexer )
     | Some chr when Char.IsDigit(chr) ->  lexConstant lexer
     | Some chr when Char.IsLetter(chr) -> Ok <| lexIdentifierKeyword lexer
     | Some unknownChar -> Error <| makeLexerError lexer $"Unexpected character '{unknownChar}'"

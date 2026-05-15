@@ -1,13 +1,16 @@
 module fscc.CAst
 
+open System.Reflection.Metadata.Ecma335
 open FsToolkit.ErrorHandling
 open Lexer
 
 // <program> ::= <function>
 // <function> ::= "int" <identifier> "(" "void" ")" "{" <statement> "}"
 // <statement> ::= "return" <exp> ";"
-// <exp> ::= <int> | <unop> <exp> | "(" <exp> ")"
+// <exp> ::= <factor> | <exp> <binop> <exp>
+// <factor> ::= <int> | <unop> <factor> | "(" <exp> ")"
 // <unop> ::= "-" | "~"
+// <binop> ::= "-" | "+" | "*" | "/" | "%"
 // <identifier> ::= ? An identifier token ?
 // <int> ::= ? A constant token ?
 
@@ -17,9 +20,17 @@ type UnaryOperator =
     | Complement
     | Negate
 
+type BinaryOperator =
+    | Plus
+    | Minus
+    | Multiply
+    | Divide
+    | Remainder
+
 type Expression =
     | Constant of int
     | Unary of UnaryOperator * Expression
+    | Binary of BinaryOperator * Expression * Expression
 
 type Statement =
     | Return of Expression
@@ -47,15 +58,40 @@ let parseIdentifier tokens =
     | token :: _ -> Error <| Message $"Expected identifier got '{token}'"
     | [] -> Error suddenEOF
 
-let rec parseExpression tokens =
+
+
+let isBinaryOperation token =
+    match token with
+    | Lexer.Minus -> true
+    | Lexer.Plus -> true
+    | Slash -> true
+    | Percentage -> true
+    | Asterisk -> true
+    | _ -> false
+
+let isNextBinaryOperator tokens =
+    match tokens with
+    | operator :: _ -> isBinaryOperation operator
+    | _ -> false
+    
+let parseBinaryOperator tokens =
+    match tokens with
+    | Lexer.Plus :: rest -> Ok (Plus, rest)
+    | Lexer.Minus :: rest -> Ok (Minus, rest )
+    | Slash :: rest -> Ok (Divide, rest)
+    | Asterisk :: rest -> Ok (Multiply, rest)
+    | Percentage :: rest -> Ok (Remainder, rest)
+    | other :: _ -> Error <| Message $"Expected binary operation, got {other}"
+
+let rec parseFactor tokens =
     match tokens with
     | Lexer.Constant value :: rest -> Ok (Constant value, rest)
     | Tilde :: rest -> result {
-        let! exp, restTokens = parseExpression rest
+        let! exp, restTokens = parseFactor rest
         return Unary (Complement, exp), restTokens
         }
-    | Minus :: rest -> result {
-        let! exp, restTokens = parseExpression rest
+    | Lexer.Minus :: rest -> result {
+        let! exp, restTokens = parseFactor rest
         return Unary (Negate, exp), restTokens
         }
     | ParenOpen :: rest -> result {
@@ -65,6 +101,23 @@ let rec parseExpression tokens =
         }
     | other :: _ -> Error <| Message $"Malformed expression: found '{other}' instead of an correct expression token"
     | [] -> Error suddenEOF
+and parseExpression tokens =
+    let rec loop left toks =
+        if isNextBinaryOperator toks then
+            result {
+                let! operator, restTokens = parseBinaryOperator toks
+                let! right, restTokens = parseFactor restTokens
+                let left = Binary (operator, left, right)
+                return! (loop left restTokens)
+            }
+        else
+            Ok (left, toks)
+            
+    result {
+        let! left, restTokens = parseFactor tokens
+        let! left, restTokens = loop left restTokens
+        return left, restTokens
+    }
 
 let parseReturn tokens =
     result {
