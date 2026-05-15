@@ -91,10 +91,6 @@ let fromInstructions instruction =
         let mov1 = Mov {| src = fromValue binary.srcLeft; dst = Reg AX |}
         let mov2 = Mov {| src = Reg DX; dst = fromValue binary.dst |}
         [mov1; Cdq; Idiv <| fromValue binary.srcRight; mov2]
-    | Tacky.Binary binary when binary.op = Tacky.ShiftLeft || binary.op = Tacky.ShiftRight ->
-        let mov1 = Mov {| src = fromValue binary.srcLeft; dst = Reg CX |}
-        let mov2 = Mov {| src = Reg CX; dst = fromValue binary.dst |}
-        [mov1; Binary (fromBinaryOperator binary.op, fromValue binary.srcRight, Reg CX); mov2]
     | Tacky.Binary binary -> // If we get an error about non-convertible binary operations, then we need to add another case here
         let dst = fromValue binary.dst
         let mov = Mov {| src = fromValue binary.srcLeft; dst = dst |}
@@ -159,18 +155,25 @@ let updateInvalidInstructions currentInstr =
         | Stack _
         | Imm _ -> [makeMov operand (Reg R10); Idiv (Reg R10) ]
         | _ -> [currentInstr]
-    | Binary (Mult, left, right) ->
-        match right with
+    | Binary (Mult, src, dst) -> // imul cant use a memory address as destination, so we are using R11
+        match dst with
         | Stack _ ->
-            [makeMov right (Reg R11);
-             Binary (Mult, left, Reg R11)
-             makeMov (Reg R11) right]
+            [makeMov dst (Reg R11);
+             Binary (Mult, src, Reg R11)
+             makeMov (Reg R11) dst]
         | _ -> [currentInstr]
-    | Binary (operation, left, right) ->
-        match left, right with
+    | Binary (shift, src, dst) when shift = ShiftLeft || shift = ShiftRight -> // Shift operation needs CX as destination
+        match dst with
+        | Reg CX -> [currentInstr]
+        | _ ->
+            [makeMov dst (Reg CX);
+             Binary (shift, src, Reg CX);
+             makeMov (Reg CX) dst]
+    | Binary (operation, src, dst) ->
+        match src, dst with
         | Stack _, Stack _ ->
-            [makeMov left (Reg R10)
-             Binary (operation, Reg R10, right)]
+            [makeMov src (Reg R10)
+             Binary (operation, Reg R10, dst)]
         | _ -> [currentInstr]
     | Unary _
     | Cdq
