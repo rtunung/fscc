@@ -1,6 +1,5 @@
 module fscc.CAst
 
-open System.Reflection.Metadata.Ecma335
 open FsToolkit.ErrorHandling
 open Lexer
 
@@ -58,21 +57,19 @@ let parseIdentifier tokens =
     | token :: _ -> Error <| Message $"Expected identifier got '{token}'"
     | [] -> Error suddenEOF
 
-
-
-let isBinaryOperation token =
+let getBinaryPrecedence token =
     match token with
-    | Lexer.Minus -> true
-    | Lexer.Plus -> true
-    | Slash -> true
-    | Percentage -> true
-    | Asterisk -> true
-    | _ -> false
+    | Lexer.Minus -> 45
+    | Lexer.Plus -> 45
+    | Slash -> 55
+    | Percentage -> 55
+    | Asterisk -> 50
+    | _ -> -100
 
-let isNextBinaryOperator tokens =
+let getNextPrecedence tokens =
     match tokens with
-    | operator :: _ -> isBinaryOperation operator
-    | _ -> false
+    | operator :: _ -> getBinaryPrecedence operator
+    | _ -> -100
     
 let parseBinaryOperator tokens =
     match tokens with
@@ -82,6 +79,7 @@ let parseBinaryOperator tokens =
     | Asterisk :: rest -> Ok (Multiply, rest)
     | Percentage :: rest -> Ok (Remainder, rest)
     | other :: _ -> Error <| Message $"Expected binary operation, got {other}"
+    | [] -> Error <| suddenEOF
 
 let rec parseFactor tokens =
     match tokens with
@@ -101,12 +99,13 @@ let rec parseFactor tokens =
         }
     | other :: _ -> Error <| Message $"Malformed expression: found '{other}' instead of an correct expression token"
     | [] -> Error suddenEOF
-and parseExpression tokens =
+and parseExpressionPrecedence tokens minPrecedence =
     let rec loop left toks =
-        if isNextBinaryOperator toks then
+        let nextPrecedence = getNextPrecedence toks
+        if nextPrecedence >= minPrecedence then
             result {
                 let! operator, restTokens = parseBinaryOperator toks
-                let! right, restTokens = parseFactor restTokens
+                let! right, restTokens = parseExpressionPrecedence restTokens (nextPrecedence + 1)
                 let left = Binary (operator, left, right)
                 return! (loop left restTokens)
             }
@@ -118,6 +117,7 @@ and parseExpression tokens =
         let! left, restTokens = loop left restTokens
         return left, restTokens
     }
+and parseExpression tokens = parseExpressionPrecedence tokens 0
 
 let parseReturn tokens =
     result {

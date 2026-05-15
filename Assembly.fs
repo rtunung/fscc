@@ -1,14 +1,23 @@
 module fscc.Assembly
 
+open fscc.Tacky
+
 type Identifier = string
 
 type Reg =
     | AX
+    | DX
     | R10
+    | R11
     
 type UnaryOperator =
     | Neg
     | Not
+    
+type BinaryOperator =
+    | Add
+    | Minus
+    | Mult
 
 type Operand =
     | Imm of int
@@ -19,6 +28,9 @@ type Operand =
 type Instruction =
     | Mov of {|src: Operand; dst: Operand|}
     | Unary of UnaryOperator * Operand
+    | Binary of BinaryOperator * Operand * Operand
+    | Idiv of Operand
+    | Cdq
     | AllocateStack of int
     | Ret
 
@@ -34,17 +46,25 @@ let makeMov src dst =
 
 let fromUnaryOperator op =
     match op with
-    | Tacky.Complement -> Not
-    | Tacky.Negate -> Neg
-    
+    | Complement -> Not
+    | Negate -> Neg
+
+let fromBinaryOperator op =
+    match op with
+    | Tacky.Minus -> Minus
+    | Plus -> Add
+    | Multiply -> Mult
+    | Remainder
+    | Divide -> failwith $"Cannot convert {op} to simple Assembly binary operator"
+
 let fromValue op =
     match op with
-    | Tacky.Constant value -> Imm value
-    | Tacky.Var identifier -> Pseudo identifier
+    | Constant value -> Imm value
+    | Var identifier -> Pseudo identifier
     
 let fromInstructions instruction =
     match instruction with
-    | Tacky.Return value ->
+    | Return value ->
         let src = fromValue value
         let mov = Mov {| src = src; dst = Reg AX |}
         [mov; Ret]
@@ -52,7 +72,19 @@ let fromInstructions instruction =
         let dst = fromValue unary.dst
         let mov = Mov {| src = fromValue unary.src; dst = dst |}
         [mov; Unary (fromUnaryOperator unary.op, dst)]
-        
+    | Tacky.Binary binary when binary.op = Divide ->
+        let mov1 = Mov {| src = fromValue binary.srcLeft; dst = Reg AX |}
+        let mov2 = Mov {| src = Reg AX; dst = fromValue binary.dst |}
+        [mov1; Cdq; Idiv <| fromValue binary.srcRight; mov2]
+    | Tacky.Binary binary when binary.op = Remainder ->
+        let mov1 = Mov {| src = fromValue binary.srcLeft; dst = Reg AX |}
+        let mov2 = Mov {| src = Reg DX; dst = fromValue binary.dst |}
+        [mov1; Cdq; Idiv <| fromValue binary.srcRight; mov2]
+    | Tacky.Binary binary -> // If we get an error about non-convertible binary operations, then we need to add another case here
+        let dst = fromValue binary.dst
+        let mov = Mov {| src = fromValue binary.srcLeft; dst = dst |}
+        [mov; Binary (fromBinaryOperator binary.op, fromValue binary.srcRight, dst)]
+
 let fromFunction (Tacky.Function func) =
     let body = List.collect fromInstructions func.instructions
     Function {| name = func.name; instructions = body |}
@@ -79,36 +111,66 @@ let replacePseudoOperand state operand=
             stackOperand, (updatedMap, updatedCounter)
     | nonPseudo -> nonPseudo, (map, counter)
 
+let updatePseudo state currentInstr =
+    match currentInstr with
+    | Unary(unaryOperator, operand) ->
+        let updatedOperand, state = replacePseudoOperand state operand
+        Unary (unaryOperator, updatedOperand), state
+    | Mov mov ->
+        let updatedSrc, state = replacePseudoOperand state mov.src
+        let updatedDst, state = replacePseudoOperand state mov.dst
+        Mov {| src = updatedSrc; dst = updatedDst |}, state
+    | Ret -> Ret, state
+    | AllocateStack i -> AllocateStack i, state
+    | Binary(operator, operand1, operand2) ->
+        let updatedOp1, state = replacePseudoOperand state operand1
+        let updatedOp2, state = replacePseudoOperand state operand2
+        Binary (operator, updatedOp1, updatedOp2), state
+    | Idiv operand ->
+        let updatedOperand, state = replacePseudoOperand state operand
+        Idiv updatedOperand, state
+    | Cdq -> Cdq, state
+    
+let updateInvalidInstructions currentInstr =
+    match currentInstr with
+    | Mov mov ->
+        match mov.src, mov.dst with
+        | Stack _, Stack _ ->
+            [makeMov mov.src (Reg R10);
+            makeMov (Reg R10) mov.dst]
+        | _ -> [currentInstr]
+    | Idiv operand ->
+        match operand with
+        | Stack _ -> [makeMov operand (Reg R10); Idiv (Reg R10)]
+        | Imm _ -> [makeMov operand (Reg R10); Idiv (Reg R10) ]
+        | _ -> [currentInstr]
+    | Binary (Mult, left, right) ->
+        match right with
+        | Stack _ ->
+            [makeMov right (Reg R11);
+             Binary (Mult, left, Reg R11)
+             makeMov (Reg R11) right]
+        | _ -> [currentInstr]
+    | Binary (operation, left, right) ->
+        match left, right with
+        | Stack _, Stack _ ->
+            [makeMov left (Reg R10)
+             Binary (operation, Reg R10, right)]
+        | _ -> [currentInstr]
+    | Unary _
+    | Cdq
+    | AllocateStack _
+    | Ret -> [currentInstr]
+
+
 let updateRegisters instructions =
     
     // First replace all Pseudo Registers with stack addresses
-    let updatePseudo (map, counter) currentInstr =
-        match currentInstr with
-        | Unary(unaryOperator, operand) ->
-            let updatedOperand, (updatedMap, updatedCounter) = replacePseudoOperand (map, counter) operand
-            Unary (unaryOperator, updatedOperand), (updatedMap, updatedCounter)
-        | Mov mov ->
-            let updatedSrc, (updatedMap, updatedCounter) = replacePseudoOperand (map, counter) mov.src
-            let updatedDst, (updatedMap, updatedCounter) = replacePseudoOperand (updatedMap, updatedCounter) mov.dst
-            Mov {| src = updatedSrc; dst = updatedDst |}, (updatedMap, updatedCounter)
-        | Ret -> Ret, (map, counter)
-        | AllocateStack i -> AllocateStack i, (map, counter)
-
     let updatedInstructions, (_, stackSize) =
         instructions
         |> List.mapFold updatePseudo (Map.empty, 0)
         
     // Instructions that have two stack operands are invalid and need to be replaced with valid instructions
-    let updateInvalidInstructions currentInstr =
-        match currentInstr with
-        | Mov mov ->
-            match mov.src, mov.dst with
-            | Stack _, Stack _ ->
-                [makeMov mov.src (Reg R10);
-                makeMov (Reg R10) mov.dst]
-            | _ -> [Mov mov]
-        | other -> [other]
-    
     updatedInstructions
     |> List.collect updateInvalidInstructions
     |> (@) [AllocateStack stackSize]
@@ -124,7 +186,9 @@ let getRegisterAssembly reg =
     match reg with
     | AX -> "%eax"
     | R10 -> "%r10d"
-    
+    | DX -> "%edx"
+    | R11 -> "%r11d"
+
 let rbp = "%rbp"
 let rsp = "%rsp"
 let functionPrologue = "\tpushq %rbp\n\tmovq %rsp, %rbp\n"
@@ -142,18 +206,36 @@ let unaryOperatorAssembly op =
     | Neg -> "negl"
     | Not -> "notl"
 
+let binaryOperatorAssembly op =
+    match op with
+    | Add -> "addl"
+    | Minus -> "subl"
+    | Mult -> "imull"
+
 let emitInstruction assembly instruction =
-    match instruction with
-    | Ret -> assembly + functionEpilogue + "\tret\n"
-    | Mov mov -> 
-        let src = getOperandAssembly mov.src
-        let dst = getOperandAssembly mov.dst
-        assembly + $"\tmovl {src}, {dst}\n"
-    | Unary(unaryOperator, operand) ->
-        let operator = unaryOperatorAssembly unaryOperator
-        let operand = getOperandAssembly operand
-        assembly + $"\t{operator} {operand}\n"
-    | AllocateStack offset -> assembly + $"\tsubq ${offset}, {rsp}\n"
+    let nextAssembly =
+        match instruction with
+        | Ret -> functionEpilogue + "\tret\n"
+        | Mov mov -> 
+            let src = getOperandAssembly mov.src
+            let dst = getOperandAssembly mov.dst
+            $"\tmovl {src}, {dst}\n"
+        | Unary(unaryOperator, operand) ->
+            let instruction = unaryOperatorAssembly unaryOperator
+            let operand = getOperandAssembly operand
+            $"\t{instruction} {operand}\n"
+        | AllocateStack offset -> $"\tsubq ${offset}, {rsp}\n"
+        | Binary(operator, left, right) ->
+            let instruction = binaryOperatorAssembly operator
+            let left = getOperandAssembly left
+            let right = getOperandAssembly right
+            $"\t{instruction} {left}, {right}\n"
+        | Idiv operand ->
+            let operand = getOperandAssembly operand
+            $"\tidivl {operand}\n"
+        | Cdq -> "\tcdq\n"
+    
+    assembly + nextAssembly
 
 let emitFunction assembly (Function func) =
     let name = func.name

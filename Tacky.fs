@@ -1,12 +1,17 @@
 module fscc.Tacky
 
-open fscc.CAst
-
 type Identifier = string
 
 type UnaryOperator =
     | Complement
     | Negate
+    
+type BinaryOperator =
+    | Minus
+    | Plus
+    | Divide
+    | Multiply
+    | Remainder
     
 type Value =
     | Constant of int
@@ -15,6 +20,7 @@ type Value =
 type Instruction =
     | Return of Value
     | Unary of {| op : UnaryOperator; src : Value; dst : Value |}
+    | Binary of {| op: BinaryOperator; srcLeft : Value; srcRight : Value; dst : Value |}
     
 type FunctionDefinition =
     Function of {| name : Identifier; instructions: Instruction list |}
@@ -33,6 +39,14 @@ let convertUnary unary =
     match unary with
     | CAst.Complement -> Complement
     | CAst.Negate -> Negate
+    
+let converBinary binary =
+    match binary with
+    | CAst.Plus -> Plus
+    | CAst.Minus -> Minus
+    | CAst.Multiply -> Multiply
+    | CAst.Divide -> Divide
+    | CAst.Remainder -> Remainder
 
 let rec emitInstruction expression instructions =
     match expression with
@@ -42,7 +56,13 @@ let rec emitInstruction expression instructions =
         let dst = Var <| getTemporaryName ()
         let newInstruction = Unary {| op = convertUnary operator; src = src; dst = dst |}
         dst, nextInstructions @ [newInstruction]
-        
+    | CAst.Binary(operator, expLeft, expRight) ->
+        let srcLeft, nextInstructions = emitInstruction expLeft instructions
+        let srcRight, nextInstructions = emitInstruction expRight nextInstructions
+        let dst = Var <| getTemporaryName ()
+        let newInstruction = Binary {| op = converBinary operator; srcLeft = srcLeft; srcRight = srcRight; dst = dst |}
+        dst, nextInstructions @ [newInstruction]
+
 let fromStatement statement =
     match statement with
     | CAst.Return expr ->
