@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-# quick tool for quickly compiling files during while developing
+# A quick tool for quickly compiling files during development
 
 import sys
 import os
