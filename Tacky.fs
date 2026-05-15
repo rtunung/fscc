@@ -1,5 +1,7 @@
 module fscc.Tacky
 
+open fscc.CAst
+
 type Identifier = string
 
 type UnaryOperator =
@@ -12,6 +14,11 @@ type BinaryOperator =
     | Divide
     | Multiply
     | Remainder
+    | Or
+    | And
+    | Xor
+    | ShiftLeft
+    | ShiftRight
     
 type Value =
     | Constant of int
@@ -47,6 +54,11 @@ let converBinary binary =
     | CAst.Multiply -> Multiply
     | CAst.Divide -> Divide
     | CAst.Remainder -> Remainder
+    | CAst.Or -> Or
+    | CAst.And -> And
+    | CAst.Xor -> Xor
+    | CAst.ShiftLeft -> ShiftLeft
+    | CAst.ShiftRight -> ShiftRight
 
 let rec emitInstruction expression instructions =
     match expression with

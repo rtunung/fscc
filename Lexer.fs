@@ -26,6 +26,13 @@ type Token =
     | Asterisk
     | Slash
     | Percentage
+    | Pipe
+    | And
+    | Caret
+    | ShiftLeft
+    | ShiftRight
+    | Greater
+    | Less
     | EOF
 
 type LexerError = {
@@ -54,7 +61,6 @@ let peek (lexer:Lexer) =
 
 let rec skipWhiteSpace lexer =
     match peek lexer with
-    | None -> lexer
     | Some chr when Char.IsWhiteSpace(chr) -> skipWhiteSpace (advance lexer)
     | _ -> lexer
 
@@ -92,6 +98,19 @@ let nextToken lexer =
     | Some '*' -> Ok ( Asterisk, advance lexer )
     | Some '/' -> Ok ( Slash, advance lexer )
     | Some '%' -> Ok ( Percentage, advance lexer )
+    | Some '|' -> Ok ( Pipe, advance lexer )
+    | Some '&' -> Ok ( And, advance lexer )
+    | Some '^' -> Ok ( Caret, advance lexer )
+    | Some '>' ->
+        let advLexer = advance lexer
+        match peek advLexer with
+        | Some '>' -> Ok (ShiftRight, advance advLexer)
+        | _ -> Ok (Greater, advLexer)
+    | Some '<' ->
+        let advLexer = advance lexer
+        match peek advLexer with
+        | Some '<' -> Ok (ShiftLeft, advance advLexer)
+        | _ -> Ok (Less, advLexer)
     | Some '-' ->
         let advLexer = advance lexer
         match peek advLexer with

@@ -2,6 +2,7 @@ module fscc.CAst
 
 open FsToolkit.ErrorHandling
 open Lexer
+open fscc.Lexer
 
 // <program> ::= <function>
 // <function> ::= "int" <identifier> "(" "void" ")" "{" <statement> "}"
@@ -25,6 +26,11 @@ type BinaryOperator =
     | Multiply
     | Divide
     | Remainder
+    | Or
+    | And
+    | Xor
+    | ShiftLeft
+    | ShiftRight
 
 type Expression =
     | Constant of int
@@ -64,6 +70,11 @@ let getBinaryPrecedence token =
     | Slash -> 55
     | Percentage -> 55
     | Asterisk -> 50
+    | Lexer.ShiftLeft -> 40
+    | Lexer.ShiftRight -> 40
+    | Lexer.And -> 35
+    | Caret -> 30
+    | Pipe -> 25
     | _ -> -100
 
 let getNextPrecedence tokens =
@@ -78,6 +89,11 @@ let parseBinaryOperator tokens =
     | Slash :: rest -> Ok (Divide, rest)
     | Asterisk :: rest -> Ok (Multiply, rest)
     | Percentage :: rest -> Ok (Remainder, rest)
+    | Pipe :: rest -> Ok (Or, rest)
+    | Lexer.And :: rest -> Ok (And, rest)
+    | Caret :: rest -> Ok (Xor, rest)
+    | Lexer.ShiftLeft :: rest -> Ok (ShiftLeft, rest)
+    | Lexer.ShiftRight :: rest -> Ok (ShiftRight, rest) 
     | other :: _ -> Error <| Message $"Expected binary operation, got {other}"
     | [] -> Error <| suddenEOF
 
@@ -99,6 +115,7 @@ let rec parseFactor tokens =
         }
     | other :: _ -> Error <| Message $"Malformed expression: found '{other}' instead of an correct expression token"
     | [] -> Error suddenEOF
+    
 and parseExpressionPrecedence tokens minPrecedence =
     let rec loop left toks =
         let nextPrecedence = getNextPrecedence toks
@@ -117,6 +134,7 @@ and parseExpressionPrecedence tokens minPrecedence =
         let! left, restTokens = loop left restTokens
         return left, restTokens
     }
+    
 and parseExpression tokens = parseExpressionPrecedence tokens 0
 
 let parseReturn tokens =

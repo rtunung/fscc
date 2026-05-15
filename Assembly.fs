@@ -7,6 +7,7 @@ type Identifier = string
 type Reg =
     | AX
     | DX
+    | CX
     | R10
     | R11
     
@@ -18,6 +19,11 @@ type BinaryOperator =
     | Add
     | Minus
     | Mult
+    | And
+    | Or
+    | Xor
+    | ShiftRight
+    | ShiftLeft
 
 type Operand =
     | Imm of int
@@ -56,6 +62,11 @@ let fromBinaryOperator op =
     | Multiply -> Mult
     | Remainder
     | Divide -> failwith $"Cannot convert {op} to simple Assembly binary operator"
+    | Tacky.Or -> Or
+    | Tacky.And -> And
+    | Tacky.Xor -> Xor
+    | Tacky.ShiftLeft -> ShiftLeft
+    | Tacky.ShiftRight -> ShiftRight
 
 let fromValue op =
     match op with
@@ -80,6 +91,10 @@ let fromInstructions instruction =
         let mov1 = Mov {| src = fromValue binary.srcLeft; dst = Reg AX |}
         let mov2 = Mov {| src = Reg DX; dst = fromValue binary.dst |}
         [mov1; Cdq; Idiv <| fromValue binary.srcRight; mov2]
+    | Tacky.Binary binary when binary.op = Tacky.ShiftLeft || binary.op = Tacky.ShiftRight ->
+        let mov1 = Mov {| src = fromValue binary.srcLeft; dst = Reg CX |}
+        let mov2 = Mov {| src = Reg CX; dst = fromValue binary.dst |}
+        [mov1; Binary (fromBinaryOperator binary.op, fromValue binary.srcRight, Reg CX); mov2]
     | Tacky.Binary binary -> // If we get an error about non-convertible binary operations, then we need to add another case here
         let dst = fromValue binary.dst
         let mov = Mov {| src = fromValue binary.srcLeft; dst = dst |}
@@ -96,7 +111,7 @@ let fromProgram program =
     
 // Second compiler pass: converting pseudo addresses to stack addresses
 
-let replacePseudoOperand state operand=
+let replacePseudoOperand state operand =
     let map, counter = state
     match operand with
     | Pseudo name ->
@@ -141,7 +156,7 @@ let updateInvalidInstructions currentInstr =
         | _ -> [currentInstr]
     | Idiv operand ->
         match operand with
-        | Stack _ -> [makeMov operand (Reg R10); Idiv (Reg R10)]
+        | Stack _
         | Imm _ -> [makeMov operand (Reg R10); Idiv (Reg R10) ]
         | _ -> [currentInstr]
     | Binary (Mult, left, right) ->
@@ -188,6 +203,7 @@ let getRegisterAssembly reg =
     | R10 -> "%r10d"
     | DX -> "%edx"
     | R11 -> "%r11d"
+    | CX -> "%ecx"
 
 let rbp = "%rbp"
 let rsp = "%rsp"
@@ -211,6 +227,11 @@ let binaryOperatorAssembly op =
     | Add -> "addl"
     | Minus -> "subl"
     | Mult -> "imull"
+    | And -> "andl"
+    | Or -> "orl"
+    | Xor -> "xorl"
+    | ShiftRight -> "shr" // Currently using logical shift; In the future we might need to use arithmetic shift for unsigned values
+    | ShiftLeft -> "shl"
 
 let emitInstruction assembly instruction =
     let nextAssembly =
