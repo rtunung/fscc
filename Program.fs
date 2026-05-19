@@ -30,7 +30,9 @@ let tokenResult = getTokens inputFile[0]
  
 let printResult a =
     match a with
-    | Error error -> eprintfn "An error occured\n%A" error
+    | Error error ->
+        eprintfn "An error occured\n%A" error
+        Environment.Exit 1
     | Ok result -> printfn "%A" result
     
 if onlyLex then
@@ -68,5 +70,7 @@ let finalAssembly =
     |> Result.map Assembly.emitProgram
     
 match finalAssembly with
-| Error error -> eprintfn "An error occured:\n%A" error
+| Error error ->
+    eprintfn "An error occured:\n%A" error
+    Environment.Exit 1
 | Ok output -> printfn "%s" output
