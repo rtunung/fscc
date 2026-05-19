@@ -67,9 +67,29 @@ let peek (lexer:Lexer) =
     if lexer.Position < lexer.Data.Length then Some lexer.Data[lexer.Position]
     else None
 
-let rec skipWhiteSpace lexer =
+let rec skipUntilNewline lexer =
     match peek lexer with
-    | Some chr when Char.IsWhiteSpace(chr) -> skipWhiteSpace (advance lexer)
+    | Some '\n' -> advance lexer
+    | Some _ -> skipUntilNewline <| advance lexer
+    | None -> lexer
+
+let rec skipUntilCommentBlockEnd lexer =
+    let advLexer = advance lexer
+    match peek lexer, peek advLexer with
+    | Some '*', Some '/' -> advance advLexer
+    | None, _ -> lexer
+    | _, _ -> skipUntilNewline advLexer
+
+let rec skipWhiteSpaceAndComments lexer =
+    match peek lexer with
+    | Some chr when Char.IsWhiteSpace(chr) -> skipWhiteSpaceAndComments (advance lexer)
+    | Some '/' ->
+        match peek (advance lexer) with
+        | Some '/' -> // Line Comment
+            skipWhiteSpaceAndComments (skipUntilNewline lexer)
+        | Some '*' -> // Block Comment
+            skipWhiteSpaceAndComments (skipUntilCommentBlockEnd lexer)
+        | _ -> lexer
     | _ -> lexer
 
 let lexConstant lexer =
@@ -155,7 +175,7 @@ let nextToken lexer =
 
 let runLexer lexer =
     let rec loop lex acc =
-        let result = lex |> skipWhiteSpace |> nextToken
+        let result = lex |> skipWhiteSpaceAndComments |> nextToken
         match result with
         | Error lexerError -> Error lexerError
         | Ok ( EOF, _) ->  Ok acc
