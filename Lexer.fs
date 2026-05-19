@@ -27,12 +27,20 @@ type Token =
     | Slash
     | Percentage
     | Pipe
-    | And
+    | Ampersand
     | Caret
     | ShiftLeft
     | ShiftRight
     | Greater
     | Less
+    | DoublePipe
+    | DoubleAmpersand
+    | DoubleEqual
+    | Equal
+    | Exclamation
+    | ExclamationEqual
+    | GreaterEqual
+    | LessEqual
     | EOF
 
 type LexerError = {
@@ -98,19 +106,39 @@ let nextToken lexer =
     | Some '*' -> Ok ( Asterisk, advance lexer )
     | Some '/' -> Ok ( Slash, advance lexer )
     | Some '%' -> Ok ( Percentage, advance lexer )
-    | Some '|' -> Ok ( Pipe, advance lexer )
-    | Some '&' -> Ok ( And, advance lexer )
+    | Some '|' ->
+        let advLexer = advance lexer
+        match peek advLexer with
+        | Some '|' -> Ok (DoublePipe, advance advLexer)
+        | _ -> Ok ( Pipe, advLexer )
+    | Some '&' ->
+        let advLexer = advance lexer
+        match peek advLexer with
+        | Some '&' -> Ok (DoubleAmpersand, advance advLexer)
+        | _ -> Ok ( Ampersand, advLexer )
     | Some '^' -> Ok ( Caret, advance lexer )
+    | Some '!' ->
+        let advLexer = advance lexer
+        match peek advLexer with
+        | Some '=' -> Ok (ExclamationEqual, advance advLexer)
+        | _ -> Ok (Exclamation, advLexer)
     | Some '>' ->
         let advLexer = advance lexer
         match peek advLexer with
         | Some '>' -> Ok (ShiftRight, advance advLexer)
+        | Some '=' -> Ok (GreaterEqual, advance lexer)
         | _ -> Ok (Greater, advLexer)
     | Some '<' ->
         let advLexer = advance lexer
         match peek advLexer with
         | Some '<' -> Ok (ShiftLeft, advance advLexer)
+        | Some '=' -> Ok (LessEqual, advance advLexer)
         | _ -> Ok (Less, advLexer)
+    | Some '=' ->
+        let advLexer = advance lexer
+        match peek advLexer with
+        | Some '=' -> Ok (DoubleEqual, advance advLexer)
+        | _ -> Ok (Equal, advLexer)
     | Some '-' ->
         let advLexer = advance lexer
         match peek advLexer with
@@ -133,4 +161,3 @@ let runLexer lexer =
         | Ok ( EOF, _) ->  Ok acc
         | Ok (token, nextLex) -> loop nextLex (acc @ [token])
     loop lexer []
-

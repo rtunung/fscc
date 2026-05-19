@@ -2,7 +2,6 @@ module fscc.CAst
 
 open FsToolkit.ErrorHandling
 open Lexer
-open fscc.Lexer
 
 // <program> ::= <function>
 // <function> ::= "int" <identifier> "(" "void" ")" "{" <statement> "}"
@@ -19,6 +18,7 @@ type Identifier = string
 type UnaryOperator =
     | Complement
     | Negate
+    | Not
 
 type BinaryOperator =
     | Plus
@@ -26,11 +26,19 @@ type BinaryOperator =
     | Multiply
     | Divide
     | Remainder
-    | Or
-    | And
-    | Xor
+    | BitwiseOr
+    | BitwiseAnd
+    | BitwiseXor
     | ShiftLeft
     | ShiftRight
+    | And
+    | Or
+    | Equal
+    | NotEqual
+    | GreaterThan
+    | LessThan
+    | GreaterOrEqual
+    | LessOrEqual
 
 type Expression =
     | Constant of int
@@ -72,9 +80,17 @@ let getBinaryPrecedence token =
     | Asterisk -> 50
     | Lexer.ShiftLeft -> 40
     | Lexer.ShiftRight -> 40
-    | Lexer.And -> 35
-    | Caret -> 30
-    | Pipe -> 25
+    | Ampersand -> 38
+    | Caret -> 38
+    | Pipe -> 38
+    | Lexer.Less -> 35
+    | Lexer.LessEqual -> 35
+    | Lexer.Greater -> 35
+    | Lexer.GreaterEqual -> 35
+    | DoubleEqual -> 30
+    | ExclamationEqual -> 30
+    | DoubleAmpersand -> 10
+    | DoublePipe -> 5
     | _ -> -100
 
 let getNextPrecedence tokens =
@@ -89,17 +105,27 @@ let parseBinaryOperator tokens =
     | Slash :: rest -> Ok (Divide, rest)
     | Asterisk :: rest -> Ok (Multiply, rest)
     | Percentage :: rest -> Ok (Remainder, rest)
-    | Pipe :: rest -> Ok (Or, rest)
-    | Lexer.And :: rest -> Ok (And, rest)
-    | Caret :: rest -> Ok (Xor, rest)
+    | Pipe :: rest -> Ok (BitwiseOr, rest)
+    | Ampersand :: rest -> Ok (BitwiseAnd, rest)
+    | Caret :: rest -> Ok (BitwiseXor, rest)
     | Lexer.ShiftLeft :: rest -> Ok (ShiftLeft, rest)
     | Lexer.ShiftRight :: rest -> Ok (ShiftRight, rest) 
+    | DoubleAmpersand :: rest -> Ok (And, rest)
+    | DoublePipe :: rest -> Ok (Or, rest)
+    | Lexer.Greater :: rest -> Ok (GreaterThan, rest)
+    | Lexer.GreaterEqual :: rest -> Ok (GreaterOrEqual, rest)
+    | Lexer.Less :: rest -> Ok (LessThan, rest)
+    | Lexer.LessEqual :: rest -> Ok (LessOrEqual, rest)
+    | DoubleEqual :: rest -> Ok (Equal, rest)
+    | ExclamationEqual :: rest -> Ok (NotEqual, rest)
+
     | other :: _ -> Error <| Message $"Expected binary operation, got {other}"
     | [] -> Error <| suddenEOF
 
 let rec parseFactor tokens =
     match tokens with
     | Lexer.Constant value :: rest -> Ok (Constant value, rest)
+    // Parsing Unary Operators
     | Tilde :: rest -> result {
         let! exp, restTokens = parseFactor rest
         return Unary (Complement, exp), restTokens
@@ -108,6 +134,11 @@ let rec parseFactor tokens =
         let! exp, restTokens = parseFactor rest
         return Unary (Negate, exp), restTokens
         }
+    | Exclamation :: rest -> result {
+        let! exp, restTokens = parseFactor rest
+        return Unary (Not, exp), restTokens
+        }
+    // Parse Expression inside parentheses
     | ParenOpen :: rest -> result {
         let! exp, restTokens = parseExpression rest
         let! restTokens = expectToken ParenClose restTokens
@@ -120,12 +151,15 @@ and parseExpressionPrecedence tokens minPrecedence =
     let rec loop left toks =
         let nextPrecedence = getNextPrecedence toks
         if nextPrecedence >= minPrecedence then
-            result {
+            let res = result {
                 let! operator, restTokens = parseBinaryOperator toks
                 let! right, restTokens = parseExpressionPrecedence restTokens (nextPrecedence + 1)
                 let left = Binary (operator, left, right)
-                return! (loop left restTokens)
-            }
+                return left, restTokens
+                }
+            match res with
+            | Error _  -> res
+            | Ok (left, restTokens) -> loop left restTokens
         else
             Ok (left, toks)
             
