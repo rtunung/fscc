@@ -146,7 +146,7 @@ let nextToken lexer =
         let advLexer = advance lexer
         match peek advLexer with
         | Some '>' -> Ok (ShiftRight, advance advLexer)
-        | Some '=' -> Ok (GreaterEqual, advance lexer)
+        | Some '=' -> Ok (GreaterEqual, advance advLexer)
         | _ -> Ok (Greater, advLexer)
     | Some '<' ->
         let advLexer = advance lexer
