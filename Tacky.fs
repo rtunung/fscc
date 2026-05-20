@@ -1,6 +1,6 @@
 module fscc.Tacky
 
-open fscc.CAst
+open fscc.C
 
 type Identifier = string
 
@@ -77,42 +77,43 @@ let getEndLabel () =
     
 let convertUnary unary =
     match unary with
-    | CAst.Complement -> Complement
-    | CAst.Negate -> Negate
-    | CAst.Not -> Not
+    | C.Complement -> Complement
+    | C.Negate -> Negate
+    | C.Not -> Not
 
 let convertBinary binary =
     match binary with
-    | CAst.Plus -> Plus
-    | CAst.Minus -> Minus
-    | CAst.Multiply -> Multiply
-    | CAst.Divide -> Divide
-    | CAst.Remainder -> Remainder
-    | CAst.BitwiseOr -> BitwiseOr
-    | CAst.BitwiseAnd -> BitwiseAnd
-    | CAst.BitwiseXor -> BitwiseXor
-    | CAst.ShiftLeft -> ShiftLeft
-    | CAst.ShiftRight -> ShiftRight
-    | CAst.Equal -> Equal
-    | CAst.NotEqual -> NotEqual
-    | CAst.GreaterThan -> GreaterThan
-    | CAst.LessThan -> LessThan
-    | CAst.GreaterOrEqual -> GreaterOrEqual
-    | CAst.LessOrEqual -> LessOrEqual
+    | C.Plus -> Plus
+    | C.Minus -> Minus
+    | C.Multiply -> Multiply
+    | C.Divide -> Divide
+    | C.Remainder -> Remainder
+    | C.BitwiseOr -> BitwiseOr
+    | C.BitwiseAnd -> BitwiseAnd
+    | C.BitwiseXor -> BitwiseXor
+    | C.ShiftLeft -> ShiftLeft
+    | C.ShiftRight -> ShiftRight
+    | C.Equal -> Equal
+    | C.NotEqual -> NotEqual
+    | C.GreaterThan -> GreaterThan
+    | C.LessThan -> LessThan
+    | C.GreaterOrEqual -> GreaterOrEqual
+    | C.LessOrEqual -> LessOrEqual
+    
     | And
-    | Or -> failwith "And and Or require conversion. This should not happen."
+    | Or -> failwith "And and Or require a different conversion. This should not happen."
 
 let varOne = Constant 1
 let varZero = Constant 0
 let rec emitInstruction expression instructions =
     match expression with
-    | CAst.Constant value -> Constant value, instructions
-    | CAst.Unary (operator, exp) ->
+    | C.Constant value -> Constant value, instructions
+    | C.Unary (operator, exp) ->
         let src, nextInstructions = emitInstruction exp instructions
         let dst = Var <| getTemporaryName ()
         let newInstruction = Unary {| op = convertUnary operator; src = src; dst = dst |}
         dst, nextInstructions @ [newInstruction]
-    | CAst.Binary(CAst.And, expLeft, expRight) ->
+    | C.Binary(C.And, expLeft, expRight) ->
         let falseLabel = getFalseLabel ()
         let endLabel = getEndLabel ()
         let resultDst = Var <| getTemporaryName ()
@@ -123,7 +124,7 @@ let rec emitInstruction expression instructions =
             nextInstructions @ [makeJumpZero srcRight falseLabel; makeCopy (Constant 1) resultDst; Jump endLabel
                                 Label falseLabel; makeCopy (Constant 0) resultDst; Label endLabel]
         resultDst, nextInstructions
-    | CAst.Binary(CAst.Or, expLeft, expRight) ->
+    | C.Binary(C.Or, expLeft, expRight) ->
         let trueLabel = getFalseLabel ()
         let endLabel = getEndLabel ()
         let resultDst = Var <| getTemporaryName ()
@@ -134,7 +135,7 @@ let rec emitInstruction expression instructions =
             nextInstructions @ [makeJumpNotZero srcRight trueLabel; makeCopy (Constant 0) resultDst; Jump endLabel
                                 Label trueLabel; makeCopy (Constant 1) resultDst; Label endLabel]
         resultDst, nextInstructions
-    | CAst.Binary(operator, expLeft, expRight) ->
+    | C.Binary(operator, expLeft, expRight) ->
         let srcLeft, nextInstructions = emitInstruction expLeft instructions
         let srcRight, nextInstructions = emitInstruction expRight nextInstructions
         let dst = Var <| getTemporaryName ()
@@ -143,14 +144,14 @@ let rec emitInstruction expression instructions =
 
 let fromStatement statement =
     match statement with
-    | CAst.Return expr ->
+    | C.Return expr ->
         let dst, instructions = emitInstruction expr []
         instructions @ [Return dst]
         
-let fromFunction (CAst.Function func) =
+let fromFunction (C.Function func) =
     let instructions = fromStatement func.instructions
     Function {| name = func.name; instructions = instructions |}
     
 let fromProgram program =
     match program with
-    | CAst.Program func -> Program <| fromFunction func
+    | C.Program func -> Program <| fromFunction func

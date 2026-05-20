@@ -70,7 +70,7 @@ let peek (lexer:Lexer) =
 let rec skipUntilNewline lexer =
     match peek lexer with
     | Some '\n' -> advance lexer
-    | Some _ -> skipUntilNewline <| advance lexer
+    | Some _ -> skipUntilNewline (advance lexer)
     | None -> lexer
 
 let rec skipUntilCommentBlockEnd lexer =
@@ -78,7 +78,7 @@ let rec skipUntilCommentBlockEnd lexer =
     match peek lexer, peek advLexer with
     | Some '*', Some '/' -> advance advLexer
     | None, _ -> lexer
-    | _, _ -> skipUntilNewline advLexer
+    | _, _ -> skipUntilCommentBlockEnd advLexer
 
 let rec skipWhiteSpaceAndComments lexer =
     match peek lexer with

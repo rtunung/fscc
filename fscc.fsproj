@@ -7,7 +7,7 @@
 
     <ItemGroup>
         <Compile Include="Lexer.fs" />
-        <Compile Include="CAst.fs" />
+        <Compile Include="C.fs" />
         <Compile Include="Tacky.fs" />
         <Compile Include="Assembly.fs" />
         <Compile Include="Program.fs" />

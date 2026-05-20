@@ -14,7 +14,7 @@ output = sys.argv[2]
 
 output_assembly = input + ".s"
 
-exit_code = os.system(f"dotnet run {input} > {output_assembly}")
+exit_code = os.system(f"dotnet run {input} --assembly > {output_assembly}")
 
 if exit_code != 0:
     print("Something went wrong! See the error message above!")

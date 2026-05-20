@@ -1,4 +1,4 @@
-module fscc.CAst
+module fscc.C
 
 open FsToolkit.ErrorHandling
 open Lexer

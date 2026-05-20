@@ -1,16 +1,18 @@
 ﻿open System
 open System.IO
 open System.Linq
+open System.Diagnostics
 open fscc
 
 let args = Environment.GetCommandLineArgs ()
  
 let onlyParse = args.Contains "--parse"
 let onlyLex = args.Contains "--lex"
-let onlyAssemblyAst = args.Contains "--codegen"
+let onlyCodeGen = args.Contains "--codegen"
 let onlyTacky = args.Contains "--tacky"
+let onlyAssembly = args.Contains "--assembly"
 
-let filterArgs = ["--parse"; "--lex"; "--codegen"; "--tacky"]
+let filterArgs = ["--parse"; "--lex"; "--codegen"; "--tacky"; "--assembly"]
 let inputFile =
     args
     |> Seq.skip 1
@@ -41,8 +43,8 @@ if onlyLex then
     
 let parseResult =
     tokenResult
-    |> Result.mapError CAst.LexError
-    |> Result.bind CAst.parseProgram
+    |> Result.mapError C.LexError
+    |> Result.bind C.parseProgram
     
 if onlyParse then
     printResult parseResult
@@ -61,16 +63,43 @@ let assemblyResult =
     |> Result.map Assembly.fromProgram
     |> Result.map Assembly.updateAllInstructions
 
-if onlyAssemblyAst then
+if onlyCodeGen then
     printResult assemblyResult
     Environment.Exit 0
     
-let finalAssembly =
+let assembly =
     assemblyResult
     |> Result.map Assembly.emitProgram
     
-match finalAssembly with
+
+if onlyAssembly then
+    match assembly with
+    | Error error ->
+        eprintfn "An error occured:\n%A" error
+        Environment.Exit 1
+    | Ok output ->
+        printfn "%s" output
+        Environment.Exit 0
+    
+match assembly with
 | Error error ->
-    eprintfn "An error occured:\n%A" error
+    eprintf "An error occured:\n%A" error
     Environment.Exit 1
-| Ok output -> printfn "%s" output
+| _ -> ()
+    
+let assemblyString = Result.defaultValue "" assembly
+    
+let outputFile =
+    let extensionBegin = inputFile[0].LastIndexOf '.'
+    inputFile[0].Substring(0, extensionBegin)
+    
+let outputAssembly = outputFile + ".s"
+
+File.WriteAllText (outputAssembly, assemblyString)
+let proc = Process.Start ("gcc", $"{outputAssembly} -o {outputFile}")
+proc.WaitForExit ()
+let gccExitCode = proc.ExitCode
+
+File.Delete outputAssembly
+if gccExitCode <> 0 then
+    Environment.Exit 1
