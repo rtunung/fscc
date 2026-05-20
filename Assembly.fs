@@ -134,7 +134,7 @@ let fromInstructions instruction =
     | Tacky.Binary binary when isRelationalOperator binary.op ->
         let cc = getCCFromOperator binary.op
         let dst = fromValue binary.dst
-        [Cmp (fromValue binary.srcRight, fromValue binary.srcRight); makeMov (Imm 0) dst; SetCC (cc, dst)]
+        [Cmp (fromValue binary.srcRight, fromValue binary.srcLeft); makeMov (Imm 0) dst; SetCC (cc, dst)]
     | Tacky.Binary binary when binary.op = Divide ->
         let mov1 = Mov {| src = fromValue binary.srcLeft; dst = Reg AX |}
         let mov2 = Mov {| src = Reg AX; dst = fromValue binary.dst |}
