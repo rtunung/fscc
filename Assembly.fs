@@ -320,7 +320,7 @@ let binaryOperatorAssembly op =
     | And -> "andl"
     | Or -> "orl"
     | Xor -> "xorl"
-    | ShiftRight -> "shr" // Currently using logical shift; In the future we might need to use arithmetic shift for unsigned values
+    | ShiftRight -> "sar" // Currently using arithmetic shift; In the future we might need logical shift
     | ShiftLeft -> "shl"
 
 let getCCSuffix cc =
