@@ -73,22 +73,28 @@ let parseIdentifier tokens =
 
 let getBinaryPrecedence token =
     match token with
-    | Lexer.Minus -> 45
-    | Lexer.Plus -> 45
     | Slash -> 55
     | Percentage -> 55
-    | Asterisk -> 50
-    | Lexer.ShiftLeft -> 40
-    | Lexer.ShiftRight -> 40
-    | Ampersand -> 38
-    | Caret -> 38
-    | Pipe -> 38
-    | Lexer.Less -> 35
-    | Lexer.LessEqual -> 35
-    | Lexer.Greater -> 35
-    | Lexer.GreaterEqual -> 35
-    | DoubleEqual -> 30
-    | ExclamationEqual -> 30
+    | Asterisk -> 55
+    
+    | Lexer.Minus -> 50
+    | Lexer.Plus -> 50
+
+    | Lexer.ShiftLeft -> 45
+    | Lexer.ShiftRight -> 45
+    
+    | Lexer.Less -> 40
+    | Lexer.LessEqual -> 40
+    | Lexer.Greater -> 40
+    | Lexer.GreaterEqual -> 40
+    
+    | DoubleEqual -> 35
+    | ExclamationEqual -> 35
+    
+    | Ampersand -> 30
+    | Caret -> 25
+    | Pipe -> 20
+
     | DoubleAmpersand -> 10
     | DoublePipe -> 5
     | _ -> -100
