@@ -82,6 +82,8 @@ let rec skipUntilCommentBlockEnd lexer =
 
 let rec skipWhiteSpaceAndComments lexer =
     match peek lexer with
+     // Skipping preprocessor directives for now! TODO: Change this once we actual have a preprocessor!!!
+    | Some '#' -> skipWhiteSpaceAndComments (skipUntilNewline lexer) 
     | Some chr when Char.IsWhiteSpace(chr) -> skipWhiteSpaceAndComments (advance lexer)
     | Some '/' ->
         match peek (advance lexer) with
