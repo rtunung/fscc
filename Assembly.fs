@@ -232,13 +232,13 @@ let updateInvalidInstructions currentInstr =
              Binary (Mult, src, Reg R11)
              makeMov (Reg R11) dst]
         | _ -> [currentInstr]
-    | Binary (shift, src, dst) when shift = ShiftLeft || shift = ShiftRight -> // Shift operation needs CX as destination
-        match dst with
+    | Binary (shift, src, dst) when shift = ShiftLeft || shift = ShiftRight -> // Shift operation needs CX as source
+        match src with
         | Reg CX -> [currentInstr]
+        | Imm _ -> [currentInstr]
         | _ ->
-            [makeMov dst (Reg CX);
-             Binary (shift, src, Reg CX);
-             makeMov (Reg CX) dst]
+            [makeMov src (Reg CX);
+             Binary (shift, Reg CX, dst)]
     | Binary (operation, src, dst) ->
         match src, dst with
         | Stack _, Stack _ ->
@@ -347,6 +347,11 @@ let emitInstruction assembly instruction =
             let operand = getOperandAssembly operand
             $"\t{instruction} {operand}\n"
         | AllocateStack offset -> $"\tsubq ${offset}, {rsp}\n"
+        | Binary(shift, Reg CX, right) when shift = ShiftLeft || shift = ShiftRight ->
+            let instruction = binaryOperatorAssembly shift
+            let left = getRegisterAssembly1Byte CX
+            let right = getOperandAssembly right
+            $"\t{instruction} {left}, {right}\n"
         | Binary(operator, left, right) ->
             let instruction = binaryOperatorAssembly operator
             let left = getOperandAssembly left
