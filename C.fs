@@ -10,10 +10,11 @@ open fscc.Misc
 // <declaration> ::= "int" <identifier> [ "=" <exp> ] ";"
 // <statement> ::= "return" <exp> ";" | <exp> ";" | ";"
 // <exp> ::= <factor> | <exp> <binop> <exp>
-// <factor> ::= <int> | <identifier> | <unop> <factor> | "(" <exp> ")"
-// <unop> ::= "-" | "~" | "!"
+// <factor> ::= <int> | <identifier> | <unop> <factor> | "(" <exp> ")" | <exp> ( "--" | "++" )
+// <unop> ::= "-" | "~" | "!" | "++" | "--"
 // <binop> ::= "-" | "+" | "*" | "/" | "%" | "&&" | "||"
 //           | "==" | "!=" | "<" | "<=" | ">" | ">=" | "="
+//           | "^" | "|" | "&"
 // <identifier> ::= ? An identifier token ?
 // <int> ::= ? A constant token ?
 
@@ -23,6 +24,10 @@ type UnaryOperator =
     | Complement
     | Negate
     | Not
+    | PrefixIncrement
+    | PrefixDecrement
+    | PostfixIncrement
+    | PostfixDecrement
 
 type BinaryOperator =
     | Plus
@@ -149,30 +154,48 @@ let parseBinaryOperator tokens =
     | [] -> Error <| suddenEOF
 
 let rec parseFactor tokens =
-    match tokens with
-    | Lexer.Constant value :: rest -> Ok (Constant value, rest)
-    | Lexer.Identifier ident :: rest -> Ok (Var ident, rest)
-    // Parsing Unary Operators
-    | Tilde :: rest -> result {
-        let! exp, restTokens = parseFactor rest
-        return Unary (Complement, exp), restTokens
-        }
-    | Lexer.Minus :: rest -> result {
-        let! exp, restTokens = parseFactor rest
-        return Unary (Negate, exp), restTokens
-        }
-    | Exclamation :: rest -> result {
-        let! exp, restTokens = parseFactor rest
-        return Unary (Not, exp), restTokens
-        }
-    // Parse Expression inside parentheses
-    | ParenOpen :: rest -> result {
-        let! exp, restTokens = parseExpression rest
-        let! restTokens = expectToken ParenClose restTokens
-        return exp, restTokens
-        }
-    | other :: _ -> Error <| Message $"Malformed expression: found '{other}' instead of an correct expression token"
-    | [] -> Error suddenEOF
+    let factor =
+        match tokens with
+        | Lexer.Constant value :: rest -> Ok (Constant value, rest)
+        | Lexer.Identifier ident :: rest -> Ok (Var ident, rest)
+        // Parsing Unary Operators
+        | Tilde :: rest -> result {
+            let! exp, restTokens = parseFactor rest
+            return Unary (Complement, exp), restTokens
+            }
+        | Lexer.Minus :: rest -> result {
+            let! exp, restTokens = parseFactor rest
+            return Unary (Negate, exp), restTokens
+            }
+        | Exclamation :: rest -> result {
+            let! exp, restTokens = parseFactor rest
+            return Unary (Not, exp), restTokens
+            }
+        | Lexer.Increment :: rest -> result {
+            let! exp, restTokens = parseFactor rest
+            return Unary (PrefixIncrement, exp), restTokens
+            }
+        | Lexer.Decrement :: rest -> result {
+            let! exp, restTokens = parseFactor rest
+            return Unary (PrefixDecrement, exp), restTokens
+            }
+        // Parse Expression inside parentheses
+        | ParenOpen :: rest -> result {
+            let! exp, restTokens = parseExpression rest
+            let! restTokens = expectToken ParenClose restTokens
+            return exp, restTokens
+            }
+        | other :: _ -> Error <| Message $"Malformed expression: found '{other}' instead of an correct expression token"
+        | [] -> Error suddenEOF
+    
+    // Handle Postfix operators
+    match factor with
+    | Error error -> Error error
+    | Ok (expr, restTokens) ->
+        match restTokens with
+        | Increment :: rest -> Ok (Unary (PostfixIncrement, expr), rest)
+        | Decrement :: rest -> Ok (Unary (PostfixDecrement, expr), rest)
+        | _ -> Ok (expr, restTokens)
     
 and parseExpressionPrecedence tokens minPrecedence =
     let rec loop left tokens =
@@ -272,6 +295,14 @@ let parseProgram tokens : Result<Program, ParserError> =
 
 // Semantic Analysis
 
+let isIncrementDecrement op =
+    match op with
+    | PostfixDecrement
+    | PrefixDecrement
+    | PostfixIncrement
+    | PrefixIncrement -> true
+    | _ -> false
+
 let rec resolveExpression expr (variableMap:Map<Identifier, Identifier>) =
     match expr with
     | Assignment (Var left, right) -> result {
@@ -285,6 +316,11 @@ let rec resolveExpression expr (variableMap:Map<Identifier, Identifier>) =
         Ok (Var uniqueName)
     | Var undeclared -> Error <| Message $"Variable {undeclared} is undeclared"
     | Constant _ -> Ok expr
+    | Unary (inc, Var a) when isIncrementDecrement inc -> result {
+        let! expr = resolveExpression (Var a) variableMap
+        return Unary (inc, expr)
+        }
+    | Unary (inc, invalid) when isIncrementDecrement inc -> Error <| Message $"Invalid lvalue {invalid} for operator {inc}"
     | Unary(operator, expression) -> result {
         let! expression = resolveExpression expression variableMap
         return Unary(operator, expression)

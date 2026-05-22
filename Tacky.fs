@@ -63,6 +63,8 @@ let convertUnary unary =
     | C.Complement -> Complement
     | C.Negate -> Negate
     | C.Not -> Not
+    | PrefixIncrement
+    | PrefixDecrement -> failwith "Cannot directly convert Increment/Decrement operators to tacky operator"
 
 let convertBinary binary =
     match binary with
@@ -92,6 +94,24 @@ let rec emitInstruction expression instructions =
     match expression with
     | C.Constant value -> Constant value, instructions
     | C.Var x -> Var x, instructions
+    | C.Unary (PrefixIncrement, exp) ->
+        let src, nextInstructions = emitInstruction exp instructions
+        let increment = Binary {| op = Plus; dst = src; srcLeft = src; srcRight = Constant 1 |}
+        src, nextInstructions @ [increment]
+    | C.Unary (PrefixDecrement, exp) ->
+        let src, nextInstructions = emitInstruction exp instructions
+        let increment = Binary {| op = Minus; dst = src; srcLeft = src; srcRight = Constant 1 |}
+        src, nextInstructions @ [increment]
+    | C.Unary (PostfixIncrement, exp) ->
+        let src, nextInstructions = emitInstruction exp instructions
+        let oldValue = Var <| getTemporaryName ()
+        let increment = Binary {| op = Plus; dst = src; srcLeft = src; srcRight = Constant 1 |}
+        oldValue, nextInstructions @ [makeCopy src oldValue; increment]
+    | C.Unary (PostfixDecrement, exp) ->
+        let src, nextInstructions = emitInstruction exp instructions
+        let oldValue = Var <| getTemporaryName ()
+        let increment = Binary {| op = Minus; dst = src; srcLeft = src; srcRight = Constant 1 |}
+        oldValue, nextInstructions @ [makeCopy src oldValue; increment]
     | C.Unary (operator, exp) ->
         let src, nextInstructions = emitInstruction exp instructions
         let dst = Var <| getTemporaryName ()
