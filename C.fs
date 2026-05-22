@@ -2,14 +2,18 @@ module fscc.C
 
 open FsToolkit.ErrorHandling
 open Lexer
+open fscc.Misc
 
 // <program> ::= <function>
-// <function> ::= "int" <identifier> "(" "void" ")" "{" <statement> "}"
-// <statement> ::= "return" <exp> ";"
+// <function> ::= "int" <identifier> "(" "void" ")" "{" { <block-item> } "}"
+// <block-item> ::= <statement> | <declaration>
+// <declaration> ::= "int" <identifier> [ "=" <exp> ] ";"
+// <statement> ::= "return" <exp> ";" | <exp> ";" | ";"
 // <exp> ::= <factor> | <exp> <binop> <exp>
-// <factor> ::= <int> | <unop> <factor> | "(" <exp> ")"
-// <unop> ::= "-" | "~"
-// <binop> ::= "-" | "+" | "*" | "/" | "%"
+// <factor> ::= <int> | <identifier> | <unop> <factor> | "(" <exp> ")"
+// <unop> ::= "-" | "~" | "!"
+// <binop> ::= "-" | "+" | "*" | "/" | "%" | "&&" | "||"
+//           | "==" | "!=" | "<" | "<=" | ">" | ">=" | "="
 // <identifier> ::= ? An identifier token ?
 // <int> ::= ? A constant token ?
 
@@ -42,14 +46,24 @@ type BinaryOperator =
 
 type Expression =
     | Constant of int
+    | Var of Identifier
+    | Assignment of Expression * Expression
     | Unary of UnaryOperator * Expression
     | Binary of BinaryOperator * Expression * Expression
 
 type Statement =
     | Return of Expression
+    | Expression of Expression
+    | Null
+
+type Declaration = Identifier * Expression option
+
+type BlockItem =
+    | Statement of Statement
+    | Declaration of Declaration
 
 type FunctionDefinition =
-    Function of {| name : Identifier; instructions: Statement |}
+    Function of Identifier * BlockItem list
 
 type Program = Program of FunctionDefinition
 
@@ -64,6 +78,11 @@ let expectToken expected tokenList =
     | token :: rest when token = expected -> Ok rest
     | token :: _ -> Error <| Message $"Expected '{expected}' got '{token}'"
     | [] -> Error suddenEOF
+
+let peekToken tokens =
+    match tokens with
+    | tok :: _ -> Some tok
+    | [] -> None
 
 let parseIdentifier tokens =
     match tokens with
@@ -83,10 +102,10 @@ let getBinaryPrecedence token =
     | Lexer.ShiftLeft -> 45
     | Lexer.ShiftRight -> 45
     
-    | Lexer.Less -> 40
-    | Lexer.LessEqual -> 40
-    | Lexer.Greater -> 40
-    | Lexer.GreaterEqual -> 40
+    | Less -> 40
+    | LessEqual -> 40
+    | Greater -> 40
+    | GreaterEqual -> 40
     
     | DoubleEqual -> 35
     | ExclamationEqual -> 35
@@ -97,6 +116,7 @@ let getBinaryPrecedence token =
 
     | DoubleAmpersand -> 10
     | DoublePipe -> 5
+    | Lexer.Equal -> 1
     | _ -> -100
 
 let getNextPrecedence tokens =
@@ -118,10 +138,10 @@ let parseBinaryOperator tokens =
     | Lexer.ShiftRight :: rest -> Ok (ShiftRight, rest) 
     | DoubleAmpersand :: rest -> Ok (And, rest)
     | DoublePipe :: rest -> Ok (Or, rest)
-    | Lexer.Greater :: rest -> Ok (GreaterThan, rest)
-    | Lexer.GreaterEqual :: rest -> Ok (GreaterOrEqual, rest)
-    | Lexer.Less :: rest -> Ok (LessThan, rest)
-    | Lexer.LessEqual :: rest -> Ok (LessOrEqual, rest)
+    | Greater :: rest -> Ok (GreaterThan, rest)
+    | GreaterEqual :: rest -> Ok (GreaterOrEqual, rest)
+    | Less :: rest -> Ok (LessThan, rest)
+    | LessEqual :: rest -> Ok (LessOrEqual, rest)
     | DoubleEqual :: rest -> Ok (Equal, rest)
     | ExclamationEqual :: rest -> Ok (NotEqual, rest)
 
@@ -131,6 +151,7 @@ let parseBinaryOperator tokens =
 let rec parseFactor tokens =
     match tokens with
     | Lexer.Constant value :: rest -> Ok (Constant value, rest)
+    | Lexer.Identifier ident :: rest -> Ok (Var ident, rest)
     // Parsing Unary Operators
     | Tilde :: rest -> result {
         let! exp, restTokens = parseFactor rest
@@ -154,51 +175,91 @@ let rec parseFactor tokens =
     | [] -> Error suddenEOF
     
 and parseExpressionPrecedence tokens minPrecedence =
-    let rec loop left toks =
-        let nextPrecedence = getNextPrecedence toks
+    let rec loop left tokens =
+        let nextPrecedence = getNextPrecedence tokens
         if nextPrecedence >= minPrecedence then
-            let res = result {
-                let! operator, restTokens = parseBinaryOperator toks
-                let! right, restTokens = parseExpressionPrecedence restTokens (nextPrecedence + 1)
-                let left = Binary (operator, left, right)
-                return left, restTokens
-                }
+            let res =
+                if peekToken tokens = Some Lexer.Equal then
+                    result {
+                        let rest = List.tail tokens
+                        let! right, rest = parseExpressionPrecedence rest nextPrecedence
+                        return Assignment (left, right), rest
+                        }
+                    else
+                        result {
+                        let! operator, rest = parseBinaryOperator tokens
+                        let! right, rest = parseExpressionPrecedence rest (nextPrecedence + 1)
+                        let left = Binary (operator, left, right)
+                        return left, rest
+                        }
             match res with
             | Error _  -> res
-            | Ok (left, restTokens) -> loop left restTokens
+            | Ok (left, rest) -> loop left rest
         else
-            Ok (left, toks)
+            Ok (left, tokens)
             
     result {
-        let! left, restTokens = parseFactor tokens
-        let! left, restTokens = loop left restTokens
-        return left, restTokens
+        let! left, rest = parseFactor tokens
+        let! left, rest = loop left rest
+        return left, rest
     }
     
 and parseExpression tokens = parseExpressionPrecedence tokens 0
 
-let parseReturn tokens =
-    result {
-        let! t = expectToken ReturnKey tokens
-        let! expression, t = parseExpression t
-        let! t = expectToken Semicolon t
-        return Return expression, t
-    }
-
 let parseStatement tokens =
-    parseReturn tokens
+    match tokens with
+    | ReturnKey :: rest -> result {
+        let! expr, rest = parseExpression rest
+        let! rest = expectToken Semicolon rest
+        return Return expr, rest
+        }
+    | Semicolon :: rest -> Ok (Null, rest)
+    | _ :: _ -> result {
+        let! expr, rest = parseExpression tokens
+        let! rest = expectToken Semicolon rest
+        return Expression expr, rest
+        }
+    | [] -> Error <| suddenEOF
+
+let parseBlockItem tokens =
+    match tokens with
+    // Declarations
+    | IntKey :: Identifier ident :: Lexer.Equal :: rest -> result {
+        let! expr, rest = parseExpression rest
+        let! rest = expectToken Semicolon rest
+        return Declaration (Identifier ident, Some expr), rest
+        }
+    | IntKey :: Identifier ident :: rest -> result {
+        let! rest = expectToken Semicolon rest
+        return Declaration (Identifier ident, None), rest
+        }
+    // Statements
+    | _ :: _ ->
+        parseStatement tokens
+        |> Result.map (fun (x, rest) -> (Statement x, rest))
+    | [] -> Error <| suddenEOF
 
 let parseFunction tokens =
+    let rec parseBlockItems tokens acc =
+        match tokens with
+        | BraceClose :: _ -> Ok (acc, tokens)
+        | _ :: _ ->
+            let result = parseBlockItem tokens
+            match result with
+            | Error error -> Error error
+            | Ok (item, rest) -> parseBlockItems rest (acc @ [item])
+        | [] -> Error <| suddenEOF
+
     result {
-        let! t = expectToken IntKey tokens
-        let! identifier, t = parseIdentifier t
-        let! t = expectToken ParenOpen t
-        let! t = expectToken VoidKey t
-        let! t = expectToken ParenClose t
-        let! t = expectToken BraceOpen t
-        let! statement, t = parseStatement t
-        let! t = expectToken BraceClose t
-        return Function {| name = identifier; instructions = statement|}, t
+        let! rest = expectToken IntKey tokens
+        let! identifier, rest = parseIdentifier rest
+        let! rest = expectToken ParenOpen rest
+        let! rest = expectToken VoidKey rest
+        let! rest = expectToken ParenClose rest
+        let! rest = expectToken BraceOpen rest
+        let! blockItems, rest = parseBlockItems rest []
+        let! rest = expectToken BraceClose rest
+        return Function (identifier, blockItems), rest
     }
 
 let parseProgram tokens : Result<Program, ParserError> =
@@ -208,3 +269,78 @@ let parseProgram tokens : Result<Program, ParserError> =
         | Ok (func, nextTokens) -> Ok (Program func), nextTokens
     if (List.isEmpty nextTokens) || (Result.isError prog) then prog
     else Error <| Message "Unexpected tokens after the end of program"
+
+// Semantic Analysis
+
+let rec resolveExpression expr (variableMap:Map<Identifier, Identifier>) =
+    match expr with
+    | Assignment (Var left, right) -> result {
+        let! left = resolveExpression (Var left) variableMap
+        let! right = resolveExpression right variableMap
+        return Assignment (left, right)
+        }
+    | Assignment (invalid, _) -> Error <| Message $"Invalid lvalue {invalid}"
+    | Var name when Map.containsKey name variableMap ->
+        let uniqueName = Map.find name variableMap
+        Ok (Var uniqueName)
+    | Var undeclared -> Error <| Message $"Variable {undeclared} is undeclared"
+    | Constant _ -> Ok expr
+    | Unary(operator, expression) -> result {
+        let! expression = resolveExpression expression variableMap
+        return Unary(operator, expression)
+        }
+    | Binary(operator, left, right) -> result {
+        let! left = resolveExpression left variableMap
+        let! right = resolveExpression right variableMap
+        return Binary(operator, left, right)
+        }
+
+let resolveDeclaration (ident, expr) (variableMap:Map<Identifier,Identifier>) =
+    if Map.containsKey ident variableMap then
+        Error <| Message $"Duplicate variable declaration of {ident}"
+    else
+        let uniqueName = Identifier (getTemporaryName ())
+        let variableMap = Map.add ident uniqueName variableMap
+
+        let expr = Option.map (fun x -> resolveExpression x variableMap) expr
+        match expr with
+        | None -> Ok (Declaration (uniqueName, None), variableMap)
+        | Some (Error error) -> Error error
+        | Some (Ok expr) -> Ok (Declaration (uniqueName, Some expr), variableMap)
+
+let resolveBlockItem item variableMap =
+    match item with
+    | Declaration declaration -> resolveDeclaration declaration variableMap
+    | Statement Null -> Ok (Statement Null, variableMap)
+    | Statement (Return expr) -> result {
+        let! expr = resolveExpression expr variableMap
+        return Statement (Return expr), variableMap
+        }
+    | Statement (Expression expr) -> result {
+        let! expr = resolveExpression expr variableMap
+        return Statement (Expression expr), variableMap
+    }
+    
+let resolveBlockItems items variableMap =
+    let rec loop items variableMap acc =
+        match items with
+        | [] -> Ok acc
+        | item :: rest ->
+            let resolvedItem = resolveBlockItem item variableMap
+            match resolvedItem with
+            | Error error -> Error error
+            | Ok (newItem, variableMap) -> loop rest variableMap (acc @ [newItem])
+    
+    loop items variableMap []
+    
+let resolveFunction (Function(funcName, blockItems)) variableMap = result {
+    let! resolvedItem = resolveBlockItems blockItems variableMap
+    return Function (funcName, resolvedItem)
+    }
+
+let semanticAnalysis (Program func) =
+    let newMap = Map.empty
+    result {
+        let! resolvedFunc = resolveFunction func newMap
+        return Program resolvedFunc
+    }

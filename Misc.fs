@@ -1,0 +1,21 @@
+module fscc.Misc
+
+// Name generators
+// Global mutable state, very evil
+let mutable tempVariableCounter = 0
+let getTemporaryName () =
+    let name = $"temp.{tempVariableCounter}"
+    tempVariableCounter <- tempVariableCounter + 1
+    name
+    
+let mutable falseLabelCounter = 0
+let getFalseLabel () =
+    let label = $"false.{falseLabelCounter}"
+    falseLabelCounter <- falseLabelCounter + 1
+    label
+    
+let mutable endLabelCounter = 0
+let getEndLabel () =
+    let label = $"end.{endLabelCounter}"
+    endLabelCounter <- endLabelCounter + 1
+    label

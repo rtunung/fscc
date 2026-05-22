@@ -105,7 +105,7 @@ let lexConstant lexer =
 let lexIdentifierKeyword lexer =
     let rec loop lex acc =
         match peek lex with
-        | Some chr when Char.IsLetterOrDigit(chr) -> loop (advance lex) (acc + string chr)
+        | Some chr when Char.IsLetterOrDigit(chr) || chr = '_' -> loop (advance lex) (acc + string chr)
         | _ -> acc, lex
     let ident, nextLex = loop lexer ""
     let token =

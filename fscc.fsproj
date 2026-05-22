@@ -6,6 +6,7 @@
     </PropertyGroup>
 
     <ItemGroup>
+        <Compile Include="Misc.fs" />
         <Compile Include="Lexer.fs" />
         <Compile Include="C.fs" />
         <Compile Include="Tacky.fs" />

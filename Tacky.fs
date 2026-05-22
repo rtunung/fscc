@@ -1,6 +1,7 @@
 module fscc.Tacky
 
 open fscc.C
+open Misc
 
 type Identifier = string
 
@@ -56,24 +57,6 @@ let makeJumpNotZero src label =
 let makeCopy src dst =
     Copy {| src = src; dst = dst; |}
 
-// Global mutable state, very evil
-let mutable tempVariableCounter = 0
-let getTemporaryName () =
-    let name = $"temp.{tempVariableCounter}"
-    tempVariableCounter <- tempVariableCounter + 1
-    Identifier name
-    
-let mutable falseLabelCounter = 0
-let getFalseLabel () =
-    let label = $"false.{falseLabelCounter}"
-    falseLabelCounter <- falseLabelCounter + 1
-    Identifier label
-    
-let mutable endLabelCounter = 0
-let getEndLabel () =
-    let label = $"end.{endLabelCounter}"
-    endLabelCounter <- endLabelCounter + 1
-    Identifier label
     
 let convertUnary unary =
     match unary with
@@ -108,12 +91,13 @@ let varZero = Constant 0
 let rec emitInstruction expression instructions =
     match expression with
     | C.Constant value -> Constant value, instructions
+    | C.Var x -> Var x, instructions
     | C.Unary (operator, exp) ->
         let src, nextInstructions = emitInstruction exp instructions
         let dst = Var <| getTemporaryName ()
         let newInstruction = Unary {| op = convertUnary operator; src = src; dst = dst |}
         dst, nextInstructions @ [newInstruction]
-    | C.Binary(C.And, expLeft, expRight) ->
+    | C.Binary(And, expLeft, expRight) ->
         let falseLabel = getFalseLabel ()
         let endLabel = getEndLabel ()
         let resultDst = Var <| getTemporaryName ()
@@ -124,7 +108,7 @@ let rec emitInstruction expression instructions =
             nextInstructions @ [makeJumpZero srcRight falseLabel; makeCopy (Constant 1) resultDst; Jump endLabel
                                 Label falseLabel; makeCopy (Constant 0) resultDst; Label endLabel]
         resultDst, nextInstructions
-    | C.Binary(C.Or, expLeft, expRight) ->
+    | C.Binary(Or, expLeft, expRight) ->
         let trueLabel = getFalseLabel ()
         let endLabel = getEndLabel ()
         let resultDst = Var <| getTemporaryName ()
@@ -141,16 +125,36 @@ let rec emitInstruction expression instructions =
         let dst = Var <| getTemporaryName ()
         let newInstruction = Binary {| op = convertBinary operator; srcLeft = srcLeft; srcRight = srcRight; dst = dst |}
         dst, nextInstructions @ [newInstruction]
+    | Assignment(C.Var ident, right) ->
+        let result, nextInstructions = emitInstruction right instructions
+        Var ident, nextInstructions @ [makeCopy result (Var ident)]
+    | Assignment(invalid, _) -> failwith $"invalid lvalue {invalid} for assignment"
 
 let fromStatement statement =
     match statement with
     | C.Return expr ->
         let dst, instructions = emitInstruction expr []
         instructions @ [Return dst]
-        
-let fromFunction (C.Function func) =
-    let instructions = fromStatement func.instructions
-    Function {| name = func.name; instructions = instructions |}
+    | Expression expr ->
+        let _, instructions = emitInstruction expr []
+        instructions
+    | Null -> []
+
+let fromDeclaration (ident, exprO) =
+    match exprO with
+    | None -> []
+    | Some expr ->
+        let dst, instructions = emitInstruction expr []
+        instructions @ [makeCopy dst (Var ident)]
+
+let fromBlockItem blockItem =
+    match blockItem with
+    | Declaration declaration -> fromDeclaration declaration
+    | Statement statement -> fromStatement statement
+
+let fromFunction (C.Function (ident, body))=
+    let instructions = (List.collect fromBlockItem body) @ [Return (Constant 0)]
+    Function {| name = ident; instructions = instructions |}
     
 let fromProgram program =
     match program with

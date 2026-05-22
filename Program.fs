@@ -11,8 +11,9 @@ let onlyLex = args.Contains "--lex"
 let onlyCodeGen = args.Contains "--codegen"
 let onlyTacky = args.Contains "--tacky"
 let onlyAssembly = args.Contains "--assembly"
+let onlyValidate = args.Contains "--validate"
 
-let filterArgs = ["--parse"; "--lex"; "--codegen"; "--tacky"; "--assembly"]
+let filterArgs = ["--parse"; "--lex"; "--codegen"; "--tacky"; "--assembly"; "--validate"]
 let inputFile =
     args
     |> Seq.skip 1
@@ -26,7 +27,7 @@ let getTokens filename =
 
 if inputFile.Length <= 0 then
     eprintfn "No input file!"
-    Environment.Exit -1
+    exit 1
     
 let tokenResult = getTokens inputFile[0] 
  
@@ -34,12 +35,12 @@ let printResult a =
     match a with
     | Error error ->
         eprintfn "An error occured\n%A" error
-        Environment.Exit 1
+        exit 1
     | Ok result -> printfn "%A" result
     
 if onlyLex then
     printResult tokenResult
-    Environment.Exit 0
+    exit 0
     
 let parseResult =
     tokenResult
@@ -48,15 +49,23 @@ let parseResult =
     
 if onlyParse then
     printResult parseResult
-    Environment.Exit 0
+    exit 0
+    
+let validatedResult =
+    parseResult
+    |> Result.bind C.semanticAnalysis
+    
+if onlyValidate then
+    printResult validatedResult
+    exit 0
     
 let tackyResult =
-    parseResult
+    validatedResult
     |> Result.map Tacky.fromProgram
     
 if onlyTacky then
     printResult tackyResult
-    Environment.Exit 0
+    exit 0
 
 let assemblyResult =
     tackyResult
@@ -65,7 +74,7 @@ let assemblyResult =
 
 if onlyCodeGen then
     printResult assemblyResult
-    Environment.Exit 0
+    exit 0
     
 let assembly =
     assemblyResult
@@ -76,15 +85,15 @@ if onlyAssembly then
     match assembly with
     | Error error ->
         eprintfn "An error occured:\n%A" error
-        Environment.Exit 1
+        exit 1
     | Ok output ->
         printfn "%s" output
-        Environment.Exit 0
+        exit 0
     
 match assembly with
 | Error error ->
     eprintf "An error occured:\n%A" error
-    Environment.Exit 1
+    exit 1
 | _ -> ()
     
 let assemblyString = Result.defaultValue "" assembly
@@ -102,4 +111,4 @@ let gccExitCode = proc.ExitCode
 
 File.Delete outputAssembly
 if gccExitCode <> 0 then
-    Environment.Exit 1
+    exit 1
