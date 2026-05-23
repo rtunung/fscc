@@ -92,69 +92,69 @@ let convertBinary binary =
 
 let varOne = Constant 1
 let varZero = Constant 0
-let rec emitInstruction expression instructions =
+let rec emitInstruction expression=
     match expression with
-    | C.Constant value -> Constant value, instructions
-    | C.Var x -> Var x, instructions
+    | C.Constant value -> Constant value, []
+    | C.Var x -> Var x, []
     | C.Unary (PrefixIncrement, exp) ->
-        let src, nextInstructions = emitInstruction exp instructions
+        let src, instructions = emitInstruction exp
         let increment = Binary {| op = Plus; dst = src; srcLeft = src; srcRight = Constant 1 |}
-        src, nextInstructions @ [increment]
+        src, instructions @ [increment]
     | C.Unary (PrefixDecrement, exp) ->
-        let src, nextInstructions = emitInstruction exp instructions
+        let src, instructions = emitInstruction exp
         let increment = Binary {| op = Minus; dst = src; srcLeft = src; srcRight = Constant 1 |}
-        src, nextInstructions @ [increment]
+        src, instructions @ [increment]
     | C.Unary (PostfixIncrement, exp) ->
-        let src, nextInstructions = emitInstruction exp instructions
+        let src, instructions = emitInstruction exp
         let oldValue = Var <| getTemporaryName ()
         let increment = Binary {| op = Plus; dst = src; srcLeft = src; srcRight = Constant 1 |}
-        oldValue, nextInstructions @ [makeCopy src oldValue; increment]
+        oldValue, instructions @ [makeCopy src oldValue; increment]
     | C.Unary (PostfixDecrement, exp) ->
-        let src, nextInstructions = emitInstruction exp instructions
+        let src, instructions = emitInstruction exp
         let oldValue = Var <| getTemporaryName ()
         let increment = Binary {| op = Minus; dst = src; srcLeft = src; srcRight = Constant 1 |}
-        oldValue, nextInstructions @ [makeCopy src oldValue; increment]
+        oldValue, instructions @ [makeCopy src oldValue; increment]
     | C.Unary (operator, exp) ->
-        let src, nextInstructions = emitInstruction exp instructions
+        let src, instructions = emitInstruction exp
         let dst = Var <| getTemporaryName ()
-        let newInstruction = Unary {| op = convertUnary operator; src = src; dst = dst |}
-        dst, nextInstructions @ [newInstruction]
+        let unaryInstruction = Unary {| op = convertUnary operator; src = src; dst = dst |}
+        dst, instructions @ [unaryInstruction]
     | C.Binary(And, expLeft, expRight) ->
         let falseLabel = getFalseLabel ()
         let endLabel = getEndLabel ()
         let resultDst = Var <| getTemporaryName ()
-        let srcLeft, nextInstructions = emitInstruction expLeft instructions
-        let nextInstructions = nextInstructions @ [makeJumpZero srcLeft falseLabel]
-        let srcRight, nextInstructions = emitInstruction expRight nextInstructions
+        let srcLeft, leftInstructions = emitInstruction expLeft
+        let nextInstructions = leftInstructions @ [makeJumpZero srcLeft falseLabel]
+        let srcRight, rightInstructions = emitInstruction expRight
         let nextInstructions =
-            nextInstructions @ [makeJumpZero srcRight falseLabel; makeCopy (Constant 1) resultDst; Jump endLabel
-                                Label falseLabel; makeCopy (Constant 0) resultDst; Label endLabel]
+            nextInstructions @ rightInstructions @ [makeJumpZero srcRight falseLabel; makeCopy (Constant 1) resultDst; Jump endLabel
+                                                    Label falseLabel; makeCopy (Constant 0) resultDst; Label endLabel]
         resultDst, nextInstructions
     | C.Binary(Or, expLeft, expRight) ->
         let trueLabel = getFalseLabel ()
         let endLabel = getEndLabel ()
         let resultDst = Var <| getTemporaryName ()
-        let srcLeft, nextInstructions = emitInstruction expLeft instructions
-        let nextInstructions = nextInstructions @ [makeJumpNotZero srcLeft trueLabel]
-        let srcRight, nextInstructions = emitInstruction expRight nextInstructions
+        let srcLeft, leftInstructions = emitInstruction expLeft
+        let nextInstructions = leftInstructions @ [makeJumpNotZero srcLeft trueLabel]
+        let srcRight, rightInstructions = emitInstruction expRight
         let nextInstructions =
-            nextInstructions @ [makeJumpNotZero srcRight trueLabel; makeCopy (Constant 0) resultDst; Jump endLabel
-                                Label trueLabel; makeCopy (Constant 1) resultDst; Label endLabel]
+            nextInstructions @ rightInstructions @ [makeJumpNotZero srcRight trueLabel; makeCopy (Constant 0) resultDst; Jump endLabel
+                                                    Label trueLabel; makeCopy (Constant 1) resultDst; Label endLabel]
         resultDst, nextInstructions
     | C.Binary(operator, expLeft, expRight) ->
-        let srcLeft, nextInstructions = emitInstruction expLeft instructions
-        let srcRight, nextInstructions = emitInstruction expRight nextInstructions
+        let srcLeft, leftInstructions = emitInstruction expLeft
+        let srcRight, rightInstructions = emitInstruction expRight
         let dst = Var <| getTemporaryName ()
         let newInstruction = Binary {| op = convertBinary operator; srcLeft = srcLeft; srcRight = srcRight; dst = dst |}
-        dst, nextInstructions @ [newInstruction]
+        dst, leftInstructions @ rightInstructions @ [newInstruction]
     | Assignment(C.Var ident, right) ->
-        let result, nextInstructions = emitInstruction right instructions
-        Var ident, nextInstructions @ [makeCopy result (Var ident)]
+        let result, instructions = emitInstruction right
+        Var ident, instructions @ [makeCopy result (Var ident)]
     | Assignment(invalid, _) -> failwith $"invalid lvalue {invalid} for assignment"
     | Conditional(cond, middle, right) ->
-        let condVal, condInstructions = emitInstruction cond []
-        let v1, middleInstructions = emitInstruction middle []
-        let v2, rightInstructions = emitInstruction right []
+        let condVal, condInstructions = emitInstruction cond
+        let v1, middleInstructions = emitInstruction middle
+        let v2, rightInstructions = emitInstruction right
         let endLabel = getEndLabel ()
         let falseLabel = getFalseLabel ()
         let result = Var <| getTemporaryName ()
@@ -166,13 +166,13 @@ let rec emitInstruction expression instructions =
 let rec fromStatement statement =
     match statement with
     | C.Return expr ->
-        let dst, instructions = emitInstruction expr []
+        let dst, instructions = emitInstruction expr
         instructions @ [Return dst]
     | Expression expr ->
-        let _, instructions = emitInstruction expr []
+        let _, instructions = emitInstruction expr
         instructions
     | If(cond, ifBody, elseOption) ->
-        let condVal, condInstructions = emitInstruction cond []
+        let condVal, condInstructions = emitInstruction cond
         let ifBodyInstructions = fromStatement ifBody
         let endLabel = getEndLabel ()
         match elseOption with
@@ -189,7 +189,7 @@ let fromDeclaration (ident, exprO) =
     match exprO with
     | None -> []
     | Some expr ->
-        let dst, instructions = emitInstruction expr []
+        let dst, instructions = emitInstruction expr
         instructions @ [makeCopy dst (Var ident)]
 
 let fromBlockItem blockItem =
