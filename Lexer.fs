@@ -10,9 +10,13 @@ type Lexer = {
 type Token =
     | Identifier of string
     | Constant of int
+    
     | IntKey
     | VoidKey
     | ReturnKey
+    | IfKey
+    | ElseKey
+    
     | ParenOpen
     | ParenClose
     | BraceOpen
@@ -41,6 +45,9 @@ type Token =
     | ExclamationEqual
     | GreaterEqual
     | LessEqual
+    | QuestionMark
+    | Colon
+    
     | EOF
 
 type LexerError = {
@@ -113,6 +120,8 @@ let lexIdentifierKeyword lexer =
         | "int" -> IntKey
         | "void" -> VoidKey
         | "return" -> ReturnKey
+        | "if" -> IfKey
+        | "else" -> ElseKey
         | value -> Identifier value
     token, nextLex
 
@@ -128,6 +137,8 @@ let nextToken lexer =
     | Some '*' -> Ok ( Asterisk, advance lexer )
     | Some '/' -> Ok ( Slash, advance lexer )
     | Some '%' -> Ok ( Percentage, advance lexer )
+    | Some '?' -> Ok ( QuestionMark, advance lexer)
+    | Some ':' -> Ok ( Colon, advance lexer )
     | Some '|' ->
         let advLexer = advance lexer
         match peek advLexer with

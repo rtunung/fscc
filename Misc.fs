@@ -19,3 +19,9 @@ let getEndLabel () =
     let label = $"end.{endLabelCounter}"
     endLabelCounter <- endLabelCounter + 1
     label
+    
+let mutable elseLabelCounter = 0
+let getElseLabel () =
+    let label = $"else.{elseLabelCounter}"
+    elseLabelCounter <- elseLabelCounter + 1
+    label

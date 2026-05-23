@@ -64,7 +64,9 @@ let convertUnary unary =
     | C.Negate -> Negate
     | C.Not -> Not
     | PrefixIncrement
-    | PrefixDecrement -> failwith "Cannot directly convert Increment/Decrement operators to tacky operator"
+    | PrefixDecrement
+    | PostfixIncrement
+    | PostfixDecrement -> failwith "Cannot directly convert Increment/Decrement operators to tacky operator"
 
 let convertBinary binary =
     match binary with
@@ -149,8 +151,19 @@ let rec emitInstruction expression instructions =
         let result, nextInstructions = emitInstruction right instructions
         Var ident, nextInstructions @ [makeCopy result (Var ident)]
     | Assignment(invalid, _) -> failwith $"invalid lvalue {invalid} for assignment"
+    | Conditional(cond, middle, right) ->
+        let condVal, condInstructions = emitInstruction cond []
+        let v1, middleInstructions = emitInstruction middle []
+        let v2, rightInstructions = emitInstruction right []
+        let endLabel = getEndLabel ()
+        let falseLabel = getFalseLabel ()
+        let result = Var <| getTemporaryName ()
+        let instructions =
+            condInstructions @ [makeJumpZero condVal falseLabel] @ middleInstructions @ [makeCopy v1 result; Jump endLabel; Label falseLabel]
+            @ rightInstructions @ [makeCopy v2 result; Label endLabel]
+        result, instructions
 
-let fromStatement statement =
+let rec fromStatement statement =
     match statement with
     | C.Return expr ->
         let dst, instructions = emitInstruction expr []
@@ -158,6 +171,18 @@ let fromStatement statement =
     | Expression expr ->
         let _, instructions = emitInstruction expr []
         instructions
+    | If(cond, ifBody, elseOption) ->
+        let condVal, condInstructions = emitInstruction cond []
+        let ifBodyInstructions = fromStatement ifBody
+        let endLabel = getEndLabel ()
+        match elseOption with
+        | None ->
+            condInstructions @ [makeJumpZero condVal endLabel] @ ifBodyInstructions @ [Label endLabel]
+        | Some elseBody ->
+            let elseLabel = getElseLabel ()
+            let elseBodyInstructions = fromStatement elseBody
+            condInstructions @ [makeJumpZero condVal elseLabel] @
+                ifBodyInstructions @ [Jump endLabel; Label elseLabel] @ elseBodyInstructions @ [Label endLabel]
     | Null -> []
 
 let fromDeclaration (ident, exprO) =

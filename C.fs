@@ -55,10 +55,12 @@ type Expression =
     | Assignment of Expression * Expression
     | Unary of UnaryOperator * Expression
     | Binary of BinaryOperator * Expression * Expression
+    | Conditional of Expression * Expression * Expression
 
 type Statement =
     | Return of Expression
     | Expression of Expression
+    | If of Expression  * Statement * Statement option
     | Null
 
 type Declaration = Identifier * Expression option
@@ -121,6 +123,7 @@ let getBinaryPrecedence token =
 
     | DoubleAmpersand -> 10
     | DoublePipe -> 5
+    | QuestionMark -> 3
     | Lexer.Equal -> 1
     | _ -> -100
 
@@ -171,11 +174,11 @@ let rec parseFactor tokens =
             let! exp, restTokens = parseFactor rest
             return Unary (Not, exp), restTokens
             }
-        | Lexer.Increment :: rest -> result {
+        | Increment :: rest -> result {
             let! exp, restTokens = parseFactor rest
             return Unary (PrefixIncrement, exp), restTokens
             }
-        | Lexer.Decrement :: rest -> result {
+        | Decrement :: rest -> result {
             let! exp, restTokens = parseFactor rest
             return Unary (PrefixDecrement, exp), restTokens
             }
@@ -189,6 +192,7 @@ let rec parseFactor tokens =
         | [] -> Error suddenEOF
     
     // Handle Postfix operators
+    // Maybe move this to parseExpressionPrecedence? Will need to do some testing
     match factor with
     | Error error -> Error error
     | Ok (expr, restTokens) ->
@@ -201,20 +205,22 @@ and parseExpressionPrecedence tokens minPrecedence =
     let rec loop left tokens =
         let nextPrecedence = getNextPrecedence tokens
         if nextPrecedence >= minPrecedence then
-            let res =
-                if peekToken tokens = Some Lexer.Equal then
-                    result {
-                        let rest = List.tail tokens
-                        let! right, rest = parseExpressionPrecedence rest nextPrecedence
-                        return Assignment (left, right), rest
-                        }
-                    else
-                        result {
-                        let! operator, rest = parseBinaryOperator tokens
-                        let! right, rest = parseExpressionPrecedence rest (nextPrecedence + 1)
-                        let left = Binary (operator, left, right)
-                        return left, rest
-                        }
+            let res = result {
+                match peekToken tokens with
+                | Some Lexer.Equal ->
+                    let rest = List.tail tokens
+                    let! right, rest = parseExpressionPrecedence rest nextPrecedence
+                    return Assignment (left, right), rest
+                | Some QuestionMark ->
+                    let! middle, rest = parseConditionalMiddle tokens
+                    let! right, rest = parseExpressionPrecedence rest nextPrecedence
+                    return Conditional (left, middle, right), rest
+                | _ ->
+                    let! operator, rest = parseBinaryOperator tokens
+                    let! right, rest = parseExpressionPrecedence rest (nextPrecedence + 1)
+                    let left = Binary (operator, left, right)
+                    return left, rest
+                }
             match res with
             | Error _  -> res
             | Ok (left, rest) -> loop left rest
@@ -229,7 +235,14 @@ and parseExpressionPrecedence tokens minPrecedence =
     
 and parseExpression tokens = parseExpressionPrecedence tokens 0
 
-let parseStatement tokens =
+and parseConditionalMiddle tokens = result {
+    let! rest = expectToken QuestionMark tokens
+    let! expr, rest = parseExpression rest
+    let! rest = expectToken Colon rest
+    return expr, rest
+}
+
+let rec parseStatement tokens =
     match tokens with
     | ReturnKey :: rest -> result {
         let! expr, rest = parseExpression rest
@@ -237,6 +250,17 @@ let parseStatement tokens =
         return Return expr, rest
         }
     | Semicolon :: rest -> Ok (Null, rest)
+    | IfKey :: rest -> result {
+        let! rest = expectToken ParenOpen rest
+        let! cond, rest = parseExpression rest
+        let! rest = expectToken ParenClose rest
+        let! ifBody, rest = parseStatement rest
+        match rest with
+        | ElseKey :: rest ->
+            let! elseBody, rest = parseStatement rest
+            return If (cond, ifBody, Some elseBody), rest
+        | _ -> return If (cond, ifBody, None), rest
+        }
     | _ :: _ -> result {
         let! expr, rest = parseExpression tokens
         let! rest = expectToken Semicolon rest
@@ -330,6 +354,12 @@ let rec resolveExpression expr (variableMap:Map<Identifier, Identifier>) =
         let! right = resolveExpression right variableMap
         return Binary(operator, left, right)
         }
+    | Conditional(cond, middle, right) -> result {
+        let! cond = resolveExpression cond variableMap
+        let! middle = resolveExpression middle variableMap
+        let! right = resolveExpression right variableMap
+        return Conditional(cond, middle, right)
+        }
 
 let resolveDeclaration (ident, expr) (variableMap:Map<Identifier,Identifier>) =
     if Map.containsKey ident variableMap then
@@ -344,18 +374,34 @@ let resolveDeclaration (ident, expr) (variableMap:Map<Identifier,Identifier>) =
         | Some (Error error) -> Error error
         | Some (Ok expr) -> Ok (Declaration (uniqueName, Some expr), variableMap)
 
-let resolveBlockItem item variableMap =
+let rec resolveStatement statement variableMap =
+    match statement with
+    | Null -> Ok Null
+    | Return expr -> result {
+        let! expr = resolveExpression expr variableMap
+        return Return expr
+        }
+    | Expression expr ->  result {
+        let! expr = resolveExpression expr variableMap
+        return Expression expr
+        }
+    | If (cond, ifBody, elseBody) -> result {
+        let! cond = resolveExpression cond variableMap
+        let! ifBody = resolveStatement ifBody variableMap
+        match elseBody with
+        | None -> return If (cond, ifBody, None)
+        | Some elseBody ->
+            let! elseBody = resolveStatement elseBody variableMap
+            return If (cond, ifBody, Some elseBody)
+            }
+
+let rec resolveBlockItem item variableMap =
     match item with
     | Declaration declaration -> resolveDeclaration declaration variableMap
-    | Statement Null -> Ok (Statement Null, variableMap)
-    | Statement (Return expr) -> result {
-        let! expr = resolveExpression expr variableMap
-        return Statement (Return expr), variableMap
+    | Statement statement -> result {
+        let! statement = resolveStatement statement variableMap
+        return Statement statement, variableMap
         }
-    | Statement (Expression expr) -> result {
-        let! expr = resolveExpression expr variableMap
-        return Statement (Expression expr), variableMap
-    }
     
 let resolveBlockItems items variableMap =
     let rec loop items variableMap acc =
