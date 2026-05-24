@@ -53,7 +53,7 @@ if onlyParse then
     
 let validatedResult =
     parseResult
-    |> Result.bind C.semanticAnalysis
+    |> Result.bind SemanticAnalysis.semanticAnalysis
     
 if onlyValidate then
     printResult validatedResult
