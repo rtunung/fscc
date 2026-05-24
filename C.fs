@@ -61,6 +61,8 @@ type Statement =
     | Return of Expression
     | Expression of Expression
     | If of Expression  * Statement * Statement option
+    | Goto of Identifier
+    | Label of Identifier * Statement
     | Null
 
 type Declaration = Identifier * Expression option
@@ -261,6 +263,12 @@ let rec parseStatement tokens =
             return If (cond, ifBody, Some elseBody), rest
         | _ -> return If (cond, ifBody, None), rest
         }
+    | Lexer.Identifier labelName :: Colon :: rest -> result {
+        let! statement, rest = parseStatement rest
+        return Label (labelName, statement), rest
+        }
+    | GotoKey :: Lexer.Identifier labelName :: Semicolon :: rest ->
+        Ok (Goto labelName, rest)
     | _ :: _ -> result {
         let! expr, rest = parseExpression tokens
         let! rest = expectToken Semicolon rest
@@ -326,6 +334,8 @@ let isIncrementDecrement op =
     | PostfixIncrement
     | PrefixIncrement -> true
     | _ -> false
+
+// ------------------------------------- Resolve Variable Identifiers --------------------------------------------------
 
 let rec resolveExpression expr (variableMap:Map<Identifier, Identifier>) =
     match expr with
@@ -394,6 +404,11 @@ let rec resolveStatement statement variableMap =
             let! elseBody = resolveStatement elseBody variableMap
             return If (cond, ifBody, Some elseBody)
             }
+    | Label (name, labelStatement) -> result {
+        let! labelStatement = resolveStatement labelStatement variableMap
+        return Label (name, labelStatement)
+        }
+    | Goto _ -> Ok statement
 
 let rec resolveBlockItem item variableMap =
     match item with
@@ -415,14 +430,80 @@ let resolveBlockItems items variableMap =
     
     loop items variableMap []
     
-let resolveFunction (Function(funcName, blockItems)) variableMap = result {
+let resolveFunction variableMap (Function(funcName, blockItems)) = result {
     let! resolvedItem = resolveBlockItems blockItems variableMap
     return Function (funcName, resolvedItem)
     }
 
+// ---------------------------------------------- Resolve Goto Labels ------------------------------------------------
+
+let rec resolveGotoStatement statement (labelMap, labelSet) =
+    match statement with
+    | Goto name ->
+        if Map.containsKey name labelMap then
+            let tmpLabel = Map.find name labelMap
+            Ok (Goto tmpLabel, (labelMap, labelSet))
+        else
+            let tmpLabel = getGotoLabel ()
+            let labelMap = Map.add name tmpLabel labelMap
+            Ok (Goto tmpLabel, (labelMap, labelSet))
+    | Label (name, labelStatement) -> result {
+        let! resolvedStatement, (labelMap, labelSet) = resolveGotoStatement labelStatement (labelMap, labelSet)
+        if Map.containsKey name labelMap then
+            if Set.contains name labelSet then
+                return! Error <| Message $"Label {name} has been defined multiple times"
+            else
+                let tmpLabel = Map.find name labelMap
+                let labelSet = Set.add name labelSet
+                return Label (tmpLabel, resolvedStatement), (labelMap, labelSet)
+        else
+            let tmpLabel = getGotoLabel ()
+            let labelMap = Map.add name tmpLabel labelMap
+            let labelSet = Set.add name labelSet
+            return Label (tmpLabel, resolvedStatement), (labelMap, labelSet)
+        }
+    | If (cond, ifStatement, elseOpt) -> result {
+        let! resolvedIf, state = resolveGotoStatement ifStatement (labelMap, labelSet)
+        match elseOpt with
+        | None -> return If (cond, resolvedIf, None), state
+        | Some elseStatement ->
+            let! resolvedElse, state = resolveGotoStatement elseStatement state
+            return If (cond, resolvedIf, Some resolvedElse), state
+        }
+    | Return _
+    | Expression _ 
+    | Null -> Ok (statement, (labelMap, labelSet))
+
+
+// TODO: Once we have compound Statements, then this function will also have to return the state back to resolveGotoFunction
+let resolveGotoBlockItems items state =
+    let rec resolve state item =
+        match item with
+        | Statement statement ->
+            let resolvedStatement = resolveGotoStatement statement state
+            match resolvedStatement with
+            | Error error -> Error error, state
+            | Ok (newStatement, state) -> Ok (Statement newStatement), state
+        | _ -> Ok item, state
+    
+    items
+    |> Seq.mapFold resolve state
+    |> fst
+    |> Seq.sequenceResultM
+    |> Result.map Array.toList
+
+let resolveGotoFunction (Function(funcName, blockItems)) = result {
+    let emptyState = (Map.empty, Set.empty)
+    let! newBlockItems = resolveGotoBlockItems blockItems emptyState
+    return Function (funcName, newBlockItems)
+    }
+
+// ------------------------------- Complete Semantic Analysis ------------------------------------------------------
+
 let semanticAnalysis (Program func) =
     let newMap = Map.empty
-    result {
-        let! resolvedFunc = resolveFunction func newMap
-        return Program resolvedFunc
-    }
+    func
+    |> resolveFunction newMap
+    |> Result.bind resolveGotoFunction
+    |> Result.map Program
+    

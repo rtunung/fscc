@@ -16,6 +16,7 @@ type Token =
     | ReturnKey
     | IfKey
     | ElseKey
+    | GotoKey
     
     | ParenOpen
     | ParenClose
@@ -122,6 +123,7 @@ let lexIdentifierKeyword lexer =
         | "return" -> ReturnKey
         | "if" -> IfKey
         | "else" -> ElseKey
+        | "goto" -> GotoKey
         | value -> Identifier value
     token, nextLex
 
@@ -183,7 +185,7 @@ let nextToken lexer =
         | Some '+' -> Ok ( Increment, advance advLexer)
         | _ -> Ok ( Plus, advLexer )
     | Some chr when Char.IsDigit(chr) ->  lexConstant lexer
-    | Some chr when Char.IsLetter(chr) -> Ok <| lexIdentifierKeyword lexer
+    | Some chr when Char.IsLetter(chr) || chr = '_' -> Ok <| lexIdentifierKeyword lexer
     | Some unknownChar -> Error <| makeLexerError lexer $"Unexpected character '{unknownChar}'"
 
 let runLexer lexer =

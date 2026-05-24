@@ -184,6 +184,8 @@ let rec fromStatement statement =
             condInstructions @ [makeJumpZero condVal elseLabel] @
                 ifBodyInstructions @ [Jump endLabel; Label elseLabel] @ elseBodyInstructions @ [Label endLabel]
     | Null -> []
+    | Goto label -> [Jump label]
+    | C.Label (labelName, labelStatement) -> [Label labelName] @ fromStatement labelStatement
 
 let fromDeclaration (ident, exprO) =
     match exprO with

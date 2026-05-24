@@ -25,3 +25,9 @@ let getElseLabel () =
     let label = $"else.{elseLabelCounter}"
     elseLabelCounter <- elseLabelCounter + 1
     label
+    
+let mutable gotoLabelCounter = 0
+let getGotoLabel () =
+    let label = $"goto.{gotoLabelCounter}"
+    gotoLabelCounter <- gotoLabelCounter + 1
+    label
