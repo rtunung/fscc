@@ -2,7 +2,6 @@ module fscc.C
 
 open FsToolkit.ErrorHandling
 open Lexer
-open fscc.Misc
 
 // <program> ::= <function>
 // <function> ::= "int" <identifier> "(" "void" ")" "{" { <block-item> } "}"
@@ -57,22 +56,25 @@ type Expression =
     | Binary of BinaryOperator * Expression * Expression
     | Conditional of Expression * Expression * Expression
 
+type Declaration = Identifier * Expression option
+
 type Statement =
     | Return of Expression
     | Expression of Expression
     | If of Expression  * Statement * Statement option
     | Goto of Identifier
     | Label of Identifier * Statement
+    | Compound of Block
     | Null
 
-type Declaration = Identifier * Expression option
-
-type BlockItem =
+and BlockItem =
     | Statement of Statement
     | Declaration of Declaration
 
+and Block = BlockItem list
+
 type FunctionDefinition =
-    Function of Identifier * BlockItem list
+    Function of Identifier * Block
 
 type Program = Program of FunctionDefinition
 
@@ -269,6 +271,10 @@ let rec parseStatement tokens =
         }
     | GotoKey :: Lexer.Identifier labelName :: Semicolon :: rest ->
         Ok (Goto labelName, rest)
+    | BraceOpen :: _ -> result {
+        let! block, rest = parseBlock tokens
+        return Compound block, rest
+        }
     | _ :: _ -> result {
         let! expr, rest = parseExpression tokens
         let! rest = expectToken Semicolon rest
@@ -276,7 +282,7 @@ let rec parseStatement tokens =
         }
     | [] -> Error <| suddenEOF
 
-let parseBlockItem tokens =
+and parseBlockItem tokens =
     match tokens with
     // Declarations
     | IntKey :: Identifier ident :: Lexer.Equal :: rest -> result {
@@ -294,27 +300,32 @@ let parseBlockItem tokens =
         |> Result.map (fun (x, rest) -> (Statement x, rest))
     | [] -> Error <| suddenEOF
 
-let parseFunction tokens =
-    let rec parseBlockItems tokens acc =
-        match tokens with
-        | BraceClose :: _ -> Ok (acc, tokens)
-        | _ :: _ ->
-            let result = parseBlockItem tokens
-            match result with
-            | Error error -> Error error
-            | Ok (item, rest) -> parseBlockItems rest (acc @ [item])
-        | [] -> Error <| suddenEOF
+and parseBlock tokens =
+        let rec loop tokens acc =
+            match tokens with
+            | BraceClose :: rest -> Ok (acc, rest)
+            | _ :: _ ->
+                let result = parseBlockItem tokens
+                match result with
+                | Error error -> Error error
+                | Ok (item, rest) -> loop rest (acc @ [item])
+            | [] -> Error <| suddenEOF
+            
+        result {
+            let! rest = expectToken BraceOpen tokens
+            let! result, rest = loop rest []
+            return (result:Block), rest
+        }
 
+let parseFunction tokens =
     result {
         let! rest = expectToken IntKey tokens
         let! identifier, rest = parseIdentifier rest
         let! rest = expectToken ParenOpen rest
         let! rest = expectToken VoidKey rest
         let! rest = expectToken ParenClose rest
-        let! rest = expectToken BraceOpen rest
-        let! blockItems, rest = parseBlockItems rest []
-        let! rest = expectToken BraceClose rest
-        return Function (identifier, blockItems), rest
+        let! block, rest = parseBlock rest
+        return Function (identifier, block), rest
     }
 
 let parseProgram tokens : Result<Program, ParserError> =

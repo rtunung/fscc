@@ -150,7 +150,7 @@ let rec emitInstruction expression=
     | Assignment(C.Var ident, right) ->
         let result, instructions = emitInstruction right
         Var ident, instructions @ [makeCopy result (Var ident)]
-    | Assignment(invalid, _) -> failwith $"invalid lvalue {invalid} for assignment"
+    | Assignment(invalid, _) -> failwith $"invalid lvalue {invalid} for assignment. This shouldn't happen after the Semantic Analysis stage"
     | Conditional(cond, middle, right) ->
         let condVal, condInstructions = emitInstruction cond
         let v1, middleInstructions = emitInstruction middle
@@ -186,21 +186,24 @@ let rec fromStatement statement =
     | Null -> []
     | Goto label -> [Jump label]
     | C.Label (labelName, labelStatement) -> [Label labelName] @ fromStatement labelStatement
+    | Compound block -> fromBlock block 
 
-let fromDeclaration (ident, exprO) =
+and fromDeclaration (ident, exprO) =
     match exprO with
     | None -> []
     | Some expr ->
         let dst, instructions = emitInstruction expr
         instructions @ [makeCopy dst (Var ident)]
 
-let fromBlockItem blockItem =
+and fromBlockItem blockItem =
     match blockItem with
     | Declaration declaration -> fromDeclaration declaration
     | Statement statement -> fromStatement statement
 
+and fromBlock block = List.collect fromBlockItem block
+
 let fromFunction (C.Function (ident, body))=
-    let instructions = (List.collect fromBlockItem body) @ [Return (Constant 0)]
+    let instructions = fromBlock body @ [Return (Constant 0)]
     Function {| name = ident; instructions = instructions |}
     
 let fromProgram program =

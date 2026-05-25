@@ -16,6 +16,16 @@ let private isIncrementDecrement op =
 
 // ------------------------------------- Resolve Variable Identifiers --------------------------------------------------
 
+(*
+    The variable names need to be mapped to globally unique names.
+    To achieve this, we need track a state as we resolve the new variables names.
+    The state has the following members:
+    - variableMap: A map from in C defined variable identifiers to globally unique identifiers
+    - blockSet: A set that contains all variables that are declared in the current block (Does not include parent or child blocks)
+        -> Detect multiple declarations in the same block.
+        -> Allows for shadowing of variable identifiers once you go into a child block
+*)
+
 let rec resolveExpression expr (variableMap:Map<Identifier, Identifier>) =
     match expr with
     | Assignment (Var left, right) -> result {
@@ -50,20 +60,21 @@ let rec resolveExpression expr (variableMap:Map<Identifier, Identifier>) =
         return Conditional(cond, middle, right)
         }
 
-let resolveDeclaration (ident, expr) (variableMap:Map<Identifier,Identifier>) =
-    if Map.containsKey ident variableMap then
+let resolveDeclaration (ident, expr) (variableMap, blockSet) =
+    if Set.contains ident blockSet then
         Error <| Message $"Duplicate variable declaration of {ident}"
     else
         let uniqueName = Identifier (getTemporaryName ())
         let variableMap = Map.add ident uniqueName variableMap
+        let blockSet = Set.add ident blockSet
 
         let expr = Option.map (fun x -> resolveExpression x variableMap) expr
         match expr with
-        | None -> Ok (Declaration (uniqueName, None), variableMap)
+        | None -> Ok (Declaration (uniqueName, None), (variableMap, blockSet))
         | Some (Error error) -> Error error
-        | Some (Ok expr) -> Ok (Declaration (uniqueName, Some expr), variableMap)
+        | Some (Ok expr) -> Ok (Declaration (uniqueName, Some expr), (variableMap, blockSet))
 
-let rec resolveStatement statement variableMap =
+let rec resolveStatement statement (variableMap, blockSet) =
     match statement with
     | Null -> Ok Null
     | Return expr -> result {
@@ -76,45 +87,58 @@ let rec resolveStatement statement variableMap =
         }
     | If (cond, ifBody, elseBody) -> result {
         let! cond = resolveExpression cond variableMap
-        let! ifBody = resolveStatement ifBody variableMap
+        let! ifBody = resolveStatement ifBody (variableMap,blockSet)
         match elseBody with
         | None -> return If (cond, ifBody, None)
         | Some elseBody ->
-            let! elseBody = resolveStatement elseBody variableMap
+            let! elseBody = resolveStatement elseBody (variableMap, blockSet)
             return If (cond, ifBody, Some elseBody)
             }
     | Label (name, labelStatement) -> result {
-        let! labelStatement = resolveStatement labelStatement variableMap
+        let! labelStatement = resolveStatement labelStatement (variableMap, blockSet)
         return Label (name, labelStatement)
         }
     | Goto _ -> Ok statement
+    | Compound block ->  result {
+        let! newBlock = resolveBlock block variableMap
+        return Compound newBlock
+    }
 
-let rec resolveBlockItem item variableMap =
+and resolveBlockItem item (variableMap, blockSet) =
     match item with
-    | Declaration declaration -> resolveDeclaration declaration variableMap
+    | Declaration declaration -> resolveDeclaration declaration (variableMap, blockSet)
     | Statement statement -> result {
-        let! statement = resolveStatement statement variableMap
-        return Statement statement, variableMap
+        let! statement = resolveStatement statement (variableMap, blockSet)
+        return Statement statement, (variableMap, blockSet)
         }
     
-let resolveBlockItems items variableMap =
-    let rec loop items variableMap acc =
+and resolveBlock items variableMap =
+    let rec loop items (variableMap, blockSet) acc =
         match items with
         | [] -> Ok acc
         | item :: rest ->
-            let resolvedItem = resolveBlockItem item variableMap
+            let resolvedItem = resolveBlockItem item (variableMap, blockSet)
             match resolvedItem with
             | Error error -> Error error
-            | Ok (newItem, variableMap) -> loop rest variableMap (acc @ [newItem])
+            | Ok (newItem, (variableMap, blockSet)) -> loop rest (variableMap, blockSet) (acc @ [newItem])
     
-    loop items variableMap []
+    loop items (variableMap, Set.empty) []
     
 let resolveFunction variableMap (Function(funcName, blockItems)) = result {
-    let! resolvedItem = resolveBlockItems blockItems variableMap
+    let! resolvedItem = resolveBlock blockItems variableMap
     return Function (funcName, resolvedItem)
     }
 
 // ---------------------------------------------- Resolve Goto Labels ------------------------------------------------
+
+(*
+    All the in C defined goto labels need to be converted to globally unique labels.
+    To achieve this, we need track a state as we resolve the new label names.
+    Labels and gotos work only inside a function; meaning for each function a new state is used.
+    The state has the following members:
+    - labelMap: A map from in C defiend labels to globally uninque labels
+    - labelSet: A set that tracks all defined labels, in order to detect labels with multiple definitions
+*)
 
 let rec resolveGotoStatement statement (labelMap, labelSet) =
     match statement with
@@ -152,10 +176,12 @@ let rec resolveGotoStatement statement (labelMap, labelSet) =
     | Return _
     | Expression _ 
     | Null -> Ok (statement, (labelMap, labelSet))
+    | Compound block -> result {
+        let! newBlock, state = resolveGotoBlock block (labelMap, labelSet)
+        return Compound newBlock, state
+        }
 
-
-// TODO: Once we have compound Statements, then this function will also have to return the state back to resolveGotoFunction
-let resolveGotoBlockItems items state =
+and resolveGotoBlock items state =
     let rec resolve state item =
         match item with
         | Statement statement ->
@@ -165,15 +191,18 @@ let resolveGotoBlockItems items state =
             | Ok (newStatement, state) -> Ok (Statement newStatement), state
         | _ -> Ok item, state
     
-    items
-    |> Seq.mapFold resolve state
-    |> fst
-    |> Seq.sequenceResultM
-    |> Result.map Array.toList
+    let resultSeq, newState = Seq.mapFold resolve state items
+    let result =
+        resultSeq
+        |> Seq.sequenceResultM
+        |> Result.map Array.toList
+    match result with
+    | Error error -> Error error
+    | Ok block -> Ok (block, newState)
 
 let resolveGotoFunction (Function(funcName, blockItems)) = result {
     let emptyState = (Map.empty, Set.empty)
-    let! newBlockItems = resolveGotoBlockItems blockItems emptyState
+    let! newBlockItems, _ = resolveGotoBlock blockItems emptyState
     return Function (funcName, newBlockItems)
     }
 
