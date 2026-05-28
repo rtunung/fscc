@@ -74,11 +74,22 @@ type Statement =
     | DummyFor of ForInit * condition: Expression option * post: Expression option * body: Statement 
     
     // Created from dummy statements in the semantic analysis stage
-    | Break of loopLabel: Identifier
+    | LoopBreak of loopLabel: Identifier
     | Continue of loopLabel: Identifier
     | While of condition: Expression * body: Statement * loopLabel: Identifier
     | DoWhile of  body: Statement * condition: Expression * loopLabel: Identifier
-    | For of ForInit * condition: Expression option * post: Expression option * body: Statement * loopLabel: Identifier 
+    | For of init: ForInit * condition: Expression option * post: Expression option * body: Statement * loopLabel: Identifier 
+    
+    // Created during the parsing phase
+    | DummySwitch of argument: Expression * body: Statement
+    | DummyCase of case: Expression * body: Statement
+    | DummyDefault of body: Statement
+    
+    // Created from dummy statements in the semantic analysis stage
+    | Switch of argument: Expression * body: Statement * cases: (Identifier * Expression) list * defaultCase: Identifier option * label: Identifier
+    | Case of label: Identifier * body: Statement
+    | Default of label: Identifier * body: Statement
+    | SwitchBreak of label: Identifier
     
     | Null
 
@@ -333,6 +344,23 @@ let rec parseStatement tokens =
         let! rest = expectToken ParenClose rest
         let! body, rest = parseStatement rest
         return DummyFor (init, conditional, post, body), rest
+        }
+    | CaseKey :: rest -> result {
+        let! expr, rest = parseExpression rest
+        let! rest = expectToken Colon rest
+        let! body, rest = parseStatement rest
+        return DummyCase (expr, body), rest
+        }
+    | DefaultKey :: Colon :: rest -> result {
+        let! body, rest = parseStatement rest
+        return DummyDefault body, rest
+        } 
+    | SwitchKey :: rest -> result {
+        let! rest = expectToken ParenOpen rest
+        let! argument, rest = parseExpression rest
+        let! rest = expectToken ParenClose rest
+        let! body, rest = parseStatement rest
+        return DummySwitch (argument, body), rest
         }
     | _ :: _ -> result {
         let! expr, rest = parseExpression tokens

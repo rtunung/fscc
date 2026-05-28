@@ -122,14 +122,33 @@ let rec resolveStatement statement (variableMap, blockSet) =
         let! resolvedBody = resolveStatement body (variableMap, blockSet)
         return DummyFor (resolvedInit, resolvedCond, resolvedPost, resolvedBody)
         }
-    
-    | Break _
+    | DummySwitch (argument, body) -> result {
+        let! resolvedArgument = resolveExpression argument variableMap
+        let! resolvedBody = resolveStatement body (variableMap, blockSet)
+        return DummySwitch (resolvedArgument,  resolvedBody)
+        }
+    | DummyCase (case, body) -> result {
+        let! resolvedCase = resolveExpression case variableMap
+        let! resolvedBody = resolveStatement body (variableMap, blockSet)
+        return DummyCase (resolvedCase, resolvedBody)
+        }
+    | DummyDefault body -> result {
+        let! resolvedBody = resolveStatement body (variableMap, blockSet)
+        return DummyDefault body
+        }
+        
+    | LoopBreak _
     | Continue _
     | DoWhile _
     | For _ 
     | While _ -> failwith "Variable resolution needs to be performed before loop labeling"
-    
-    
+
+    | Switch _
+    | Case _
+    | Default _
+    | SwitchBreak _ -> failwith "Variable resolution needs to be performed before switch labeling"
+
+
 and resolveOptionalExpression expr variableMap =
     expr
     |> Option.map (fun x ->  resolveExpression x variableMap)
@@ -241,12 +260,29 @@ let rec resolveGotoStatement statement (labelMap, labelSet) =
         let! resolvedBody, state = resolveGotoStatement body state
         return DummyFor (init, cond, post, resolvedBody), state
         }
+    | DummySwitch (argument, body) -> result {
+        let! resolvedBody, state = resolveGotoStatement body state
+        return DummySwitch (argument, resolvedBody), state
+        }
+    | DummyCase(expression, body) -> result {
+        let! resolvedBody, state = resolveGotoStatement body state
+        return DummyCase (expression, resolvedBody), state
+        }
+    | DummyDefault body -> result {
+        let! resolvedBody, state = resolveGotoStatement body state
+        return DummyDefault resolvedBody, state
+        } 
     
-    | Break _
+    | LoopBreak _
     | Continue _
     | While _
     | DoWhile _
     | For _ -> failwith "Goto resolution needs to be performed before loop labeling"
+    
+    | Switch _
+    | Case _
+    | Default _
+    | SwitchBreak _ -> failwith "Goto resolution needs to be performed before switch labeling"
 
 and resolveGotoBlock items state =
     let rec resolve state item =
@@ -273,13 +309,122 @@ let resolveGotoFunction (Function(funcName, blockItems)) = result {
     return Function (funcName, newBlockItems)
     }
 
+// ------------------------------------- Switch Labeling -----------------------------------------------------------
+
+type SwitchResolutionState = SwitchState of currentSwitch: Identifier option * cases: (Identifier * Expression) list * defaults: Expression list
+
+let rec resolveSwitchStatement statement (currentSwitch, cases, defaults) =
+    match statement with
+    | DummyCase (expression, body) ->
+        match currentSwitch with
+        | None -> Error <| Message "case statement outside of switch"
+        | Some _ -> result {
+            let caseLabel = getSwitchLabel ()
+            let pair = (caseLabel, expression)
+            let! resolvedBody, (cases, defaults) = resolveSwitchStatement body (currentSwitch, cases, defaults)
+            let thisCase = Case (caseLabel, resolvedBody)
+            return (thisCase, (cases @ [pair], defaults))
+            }
+    | DummyDefault body ->
+        match currentSwitch with
+        | None -> Error <| Message "default statement outside of switch"
+        | Some _ -> result {
+            let defaultLabel = getSwitchLabel ()
+            let! resolvedBody, (cases, defaults) = resolveSwitchStatement body (currentSwitch, cases, defaults)
+            let thisDefault = Default (defaultLabel, resolvedBody)
+            return (thisDefault, (cases, defaults @ [Identifier defaultLabel]))
+            }
+    | DummySwitch(argument, body) -> result {
+        let label = getSwitchLabel ()
+        let! resolvedBody, (thisCases, thisDefaults) = resolveSwitchStatement body (Some label, List.empty, List.empty)
+        if (List.length thisDefaults) > 1 then
+            return! Error <| Message "More than one default statement in switch statement"
+        else
+            let defaultCase = List.tryHead thisDefaults
+            return Switch (argument, resolvedBody, thisCases, defaultCase, label), (cases, defaults)
+        }
+    | If (condition, body, elseOption) -> result {
+        let! resolvedBody, (cases, defaults) = resolveSwitchStatement body (currentSwitch, cases, defaults)
+        match elseOption with
+        | None -> return If (condition, resolvedBody, None), (cases, defaults)
+        | Some elseBody ->
+            let! resolvedElse, (cases, defaults) = resolveSwitchStatement elseBody (currentSwitch, cases, defaults)
+            return If (condition, resolvedBody, Some resolvedElse), (cases, defaults)
+        }
+    | Label(name, statement) -> result {
+        let! resolvedStatement, (cases, defaults) = resolveSwitchStatement statement (currentSwitch, cases, defaults)
+        return Label (name, resolvedStatement), (cases, defaults)
+        }
+    | DummyBreak ->
+        match currentSwitch with
+        | None -> Ok (DummyBreak, (cases, defaults))
+        | Some label -> Ok (SwitchBreak label, (cases, defaults))
+    | DummyWhile (condition, body) -> result {
+        let! resolvedBody, (cases, defaults) = resolveSwitchStatement body (currentSwitch, cases, defaults)
+        return DummyWhile (condition, resolvedBody), (cases, defaults)
+        }
+    | DummyDoWhile(body, condition) -> result {
+        let! resolvedBody, (cases, defaults) = resolveSwitchStatement body (currentSwitch, cases, defaults)
+        return DummyDoWhile (resolvedBody, condition), (cases, defaults)
+        }
+    | DummyFor(forInit, condition, post, body) -> result {
+        let! resolvedBody, (cases, defaults) = resolveSwitchStatement body (currentSwitch, cases, defaults)
+        return DummyFor (forInit, condition, post, resolvedBody), (cases, defaults)
+        }
+    | Compound block -> result {
+        let! resolvedBlock, (cases, defaults) = resolveSwitchBlock block (currentSwitch, cases, defaults)
+        return Compound resolvedBlock, (cases, defaults)
+        }
+
+    | Null
+    | Expression _
+    | Goto _
+    | DummyContinue
+    | Return _ -> Ok (statement, (cases, defaults))
+    
+    | LoopBreak _
+    | Continue _
+    | While _
+    | DoWhile _
+    | For _ -> failwith "Switch labeling needs to be performed before loop labeling"
+    
+    | Switch _
+    | Case _
+    | Default _
+    | SwitchBreak _ -> failwith "Switch labeling has already been done"
+    
+and resolveSwitchBlockItem item (currentSwitch, cases, defaults) =
+    match item with
+    | Statement statement -> result {
+        let! resolvedStatement, (cases, defaults) = resolveSwitchStatement statement (currentSwitch, cases, defaults)
+        return Statement resolvedStatement, (cases, defaults)
+        }
+    | Declaration _ -> Ok (item, (cases, defaults))
+    
+and resolveSwitchBlock block (currentSwitch, cases, defaults) =
+    let rec loop (cases, defaults) items acc =
+        match items with
+        | item :: rest ->
+            let resolveResult = resolveSwitchBlockItem item (currentSwitch, cases, defaults)
+            match resolveResult with
+            | Error error -> Error error
+            | Ok (resolvedItem, (cases, defaults)) -> loop (cases, defaults) rest (acc @ [resolvedItem])
+        | [] -> Ok (acc, (cases, defaults))
+    
+    loop (cases, defaults) block []
+
+let resolveSwitchFunction (Function(name, body)) = result {
+    let! resolvedBody, _ = resolveSwitchBlock body (None, List.empty, List.empty)
+    return Function (name, resolvedBody)
+    }
+
 // --------------------------------------- Loop Labeling -----------------------------------------------------------
 
 let rec resolveLoopStatement statement currentLabel =
-    match statement with
+     match statement with
      | DummyBreak ->
          match currentLabel with
-         | Some label -> Ok (Break label)
+         | Some label -> Ok (LoopBreak label)
          | None -> Error <| Message "Break statement outside of loop"
      | DummyContinue ->
          match currentLabel with
@@ -316,17 +461,35 @@ let rec resolveLoopStatement statement currentLabel =
             |> Option.sequenceResult
         return If (cond, resolvedBody, resolvedElse)
         }
+     | Switch(argument, body, cases, defaultCase, label) -> result {
+        let! resolvedBody = resolveLoopStatement body currentLabel
+        return Switch (argument, resolvedBody, cases, defaultCase, label)
+        }
+     | Case (label, body) -> result {
+        let! resolvedBody = resolveLoopStatement body currentLabel
+        return Case (label, resolvedBody)
+        }
+     | Default (label, body) -> result {
+        let! resolvedBody = resolveLoopStatement body currentLabel
+        return Default (label, resolvedBody)
+        }
      
      | Expression _
      | Goto _
      | Null
+     | SwitchBreak _
      | Return _ -> Ok statement
      
-     | Break _
+     | LoopBreak _
      | Continue _
      | While _
      | DoWhile _
      | For _ -> failwith "Loop labeling has already been done"
+     
+     | DummySwitch _
+     | DummyCase _
+     | DummyDefault _ -> failwith "Loop labeling has to be done after switch labeling"
+
 
 
 and resolveLoopBlockItem currentLabel item =
@@ -352,6 +515,7 @@ let semanticAnalysis (Program func) =
     func
     |> resolveFunction newMap
     |> Result.bind resolveGotoFunction
+    |> Result.bind resolveSwitchFunction
     |> Result.bind resolveLoopFunction
     |> Result.map Program
     

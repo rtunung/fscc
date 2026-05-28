@@ -22,6 +22,9 @@ type Token =
     | ForKey
     | BreakKey
     | ContinueKey
+    | SwitchKey
+    | CaseKey
+    | DefaultKey
     
     | ParenOpen
     | ParenClose
@@ -134,6 +137,9 @@ let lexIdentifierKeyword lexer =
         | "for" -> ForKey
         | "break" -> BreakKey
         | "continue" ->  ContinueKey
+        | "switch" -> SwitchKey
+        | "case" -> CaseKey
+        | "default" -> DefaultKey
         | value -> Identifier value
     token, nextLex
 

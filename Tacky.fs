@@ -188,7 +188,7 @@ let rec fromStatement statement =
     | C.Label (labelName, labelStatement) -> [Label labelName] @ fromStatement labelStatement
     | Compound block -> fromBlock block
 
-    | Break label -> [Jump (label + ".end")]
+    | LoopBreak label -> [Jump (label + ".end")]
     | Continue label -> [Jump label]
     | DoWhile (body, condition, label) ->
         let bodyInstructions = fromStatement body
@@ -228,11 +228,37 @@ let rec fromStatement statement =
         initInstructions @ [Label startLabel] @ condInstructions @ [makeJumpZero cond endLabel] @
         bodyInstruction @ [Label label] @ postInstructions @ [Jump startLabel; Label endLabel]
 
+    | Case (label, body) -> [Label label] @ fromStatement body
+    | Default (label, body) -> [Label label] @ fromStatement body
+    | SwitchBreak label -> [Jump label]
+    | Switch(argument, body, cases, defaultCase, label) ->
+        let arg, argumentInstructions = emitInstruction argument
+        let bodyInstructions = fromStatement body
+        let cmpResult = Var <| getTemporaryName ()
+        
+        let genJumps (label, expr) =
+            let value, exprInstructions = emitInstruction expr
+            let comparison = Binary {| op = Equal; srcLeft = value; srcRight = arg; dst = cmpResult |}
+            exprInstructions @ [comparison; makeJumpNotZero cmpResult label]
+        
+        let conditionalChecks = List.collect genJumps cases
+        let defaultJump =
+            match defaultCase with
+            | None -> []
+            | Some label -> [Jump label]
+            
+        argumentInstructions @ conditionalChecks @ defaultJump @ [Jump label] @
+        bodyInstructions @ [Label label]
+    
+    | DummySwitch _
+    | DummyCase _
+    | DummyDefault _
     | DummyBreak
     | DummyContinue 
     | DummyWhile _
     | DummyDoWhile _
-    | DummyFor _ -> failwith "Loop labeling stage must be performed before TACKY generation"
+    | DummyFor _ -> failwith "Semantic analysis stage must be performed before TACKY generation"
+
 
 and fromDeclaration (ident, exprO) =
     match exprO with

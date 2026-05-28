@@ -37,3 +37,9 @@ let getLoopLabel () =
     let label = $"loop.{loopLabelcounter}"
     loopLabelcounter <- loopLabelcounter + 1
     label
+    
+let mutable switchLabelCounter = 0
+let getSwitchLabel () =
+    let label = $"switch.{switchLabelCounter}"
+    switchLabelCounter <- switchLabelCounter + 1
+    label
