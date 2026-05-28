@@ -134,7 +134,7 @@ let rec resolveStatement statement (variableMap, blockSet) =
         }
     | DummyDefault body -> result {
         let! resolvedBody = resolveStatement body (variableMap, blockSet)
-        return DummyDefault body
+        return DummyDefault resolvedBody
         }
         
     | LoopBreak _
