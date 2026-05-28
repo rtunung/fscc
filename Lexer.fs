@@ -17,6 +17,11 @@ type Token =
     | IfKey
     | ElseKey
     | GotoKey
+    | DoKey
+    | WhileKey
+    | ForKey
+    | BreakKey
+    | ContinueKey
     
     | ParenOpen
     | ParenClose
@@ -124,6 +129,11 @@ let lexIdentifierKeyword lexer =
         | "if" -> IfKey
         | "else" -> ElseKey
         | "goto" -> GotoKey
+        | "do" -> DoKey
+        | "while" -> WhileKey
+        | "for" -> ForKey
+        | "break" -> BreakKey
+        | "continue" ->  ContinueKey
         | value -> Identifier value
     token, nextLex
 

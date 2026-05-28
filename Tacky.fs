@@ -186,7 +186,53 @@ let rec fromStatement statement =
     | Null -> []
     | Goto label -> [Jump label]
     | C.Label (labelName, labelStatement) -> [Label labelName] @ fromStatement labelStatement
-    | Compound block -> fromBlock block 
+    | Compound block -> fromBlock block
+
+    | Break label -> [Jump (label + ".end")]
+    | Continue label -> [Jump label]
+    | DoWhile (body, condition, label) ->
+        let bodyInstructions = fromStatement body
+        let cond, condInstructions = emitInstruction condition
+        let startLabel = label + ".start"
+        
+        [Label startLabel] @ bodyInstructions @
+        [Label label] @ condInstructions @
+        [makeJumpNotZero cond startLabel; Label (label + ".end")]
+        
+    | While (condition, body, label) ->
+        let bodyInstructions = fromStatement body
+        let cond, condInstructions = emitInstruction condition
+        let endLabel = label + ".end"
+        
+        [Label label] @ condInstructions @ [makeJumpZero cond endLabel] @
+        bodyInstructions @ [Jump label; Label endLabel]
+        
+    | For(init, condition, post, body, label) ->
+        let initInstructions =
+            match init with
+            | InitDeclaration declaration -> fromDeclaration declaration
+            | InitExpression None -> []
+            | InitExpression (Some expr) -> expr |> emitInstruction |> snd
+        let bodyInstruction = fromStatement body
+        let cond, condInstructions =
+            match condition with
+            | Some cond -> emitInstruction cond
+            | None -> Constant 1, []
+        let postInstructions =
+            match post with
+            | None -> []
+            | Some expr -> expr |> emitInstruction |> snd
+        let endLabel = label + ".end"
+        let startLabel = label + ".start"
+        
+        initInstructions @ [Label startLabel] @ condInstructions @ [makeJumpZero cond endLabel] @
+        bodyInstruction @ [Label label] @ postInstructions @ [Jump startLabel; Label endLabel]
+
+    | DummyBreak
+    | DummyContinue 
+    | DummyWhile _
+    | DummyDoWhile _
+    | DummyFor _ -> failwith "Loop labeling stage must be performed before TACKY generation"
 
 and fromDeclaration (ident, exprO) =
     match exprO with

@@ -31,3 +31,9 @@ let getGotoLabel () =
     let label = $"goto.{gotoLabelCounter}"
     gotoLabelCounter <- gotoLabelCounter + 1
     label
+    
+let mutable loopLabelcounter = 0
+let getLoopLabel () =
+    let label = $"loop.{loopLabelcounter}"
+    loopLabelcounter <- loopLabelcounter + 1
+    label

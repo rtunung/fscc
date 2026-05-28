@@ -54,18 +54,37 @@ type Expression =
     | Assignment of Expression * Expression
     | Unary of UnaryOperator * Expression
     | Binary of BinaryOperator * Expression * Expression
-    | Conditional of Expression * Expression * Expression
+    | Conditional of condition: Expression * Expression * Expression
 
 type Declaration = Identifier * Expression option
 
 type Statement =
     | Return of Expression
     | Expression of Expression
-    | If of Expression  * Statement * Statement option
+    | If of condition: Expression  * Statement * Statement option
     | Goto of Identifier
     | Label of Identifier * Statement
     | Compound of Block
+    
+    // Created during the parsing phase
+    | DummyBreak
+    | DummyContinue
+    | DummyWhile of condition: Expression * body: Statement
+    | DummyDoWhile of  body: Statement * condition: Expression
+    | DummyFor of ForInit * condition: Expression option * post: Expression option * body: Statement 
+    
+    // Created from dummy statements in the semantic analysis stage
+    | Break of loopLabel: Identifier
+    | Continue of loopLabel: Identifier
+    | While of condition: Expression * body: Statement * loopLabel: Identifier
+    | DoWhile of  body: Statement * condition: Expression * loopLabel: Identifier
+    | For of ForInit * condition: Expression option * post: Expression option * body: Statement * loopLabel: Identifier 
+    
     | Null
+
+and ForInit =
+    | InitDeclaration of Declaration
+    | InitExpression of Expression option
 
 and BlockItem =
     | Statement of Statement
@@ -246,6 +265,12 @@ and parseConditionalMiddle tokens = result {
     return expr, rest
 }
 
+let parseOptionalExpression tokens =
+    let result = parseExpression tokens
+    match result with
+    | Error _ -> None, tokens
+    | Ok (expr, rest) -> Some expr, rest
+
 let rec parseStatement tokens =
     match tokens with
     | ReturnKey :: rest -> result {
@@ -275,6 +300,40 @@ let rec parseStatement tokens =
         let! block, rest = parseBlock tokens
         return Compound block, rest
         }
+    | ContinueKey :: rest -> result {
+        let! rest = expectToken Semicolon rest
+        return DummyContinue, rest
+        }
+    | BreakKey :: rest -> result {
+        let! rest = expectToken Semicolon rest
+        return DummyBreak, rest
+        }
+    | WhileKey :: rest -> result {
+        let! rest = expectToken ParenOpen rest
+        let! condition, rest = parseExpression rest
+        let! rest = expectToken ParenClose rest
+        let! body, rest = parseStatement rest
+        return DummyWhile (condition, body), rest
+        }
+    | DoKey :: rest -> result {
+        let! body, rest = parseStatement rest
+        let! rest = expectToken WhileKey rest
+        let! rest = expectToken ParenOpen rest
+        let! condition, rest = parseExpression rest
+        let! rest = expectToken ParenClose rest
+        let! rest = expectToken Semicolon rest
+        return DummyDoWhile (body, condition), rest
+        }
+    | ForKey :: rest -> result {
+        let! rest = expectToken ParenOpen rest
+        let! init, rest = parseForInit rest
+        let conditional, rest = parseOptionalExpression rest
+        let! rest = expectToken Semicolon rest
+        let post, rest = parseOptionalExpression rest
+        let! rest = expectToken ParenClose rest
+        let! body, rest = parseStatement rest
+        return DummyFor (init, conditional, post, body), rest
+        }
     | _ :: _ -> result {
         let! expr, rest = parseExpression tokens
         let! rest = expectToken Semicolon rest
@@ -285,14 +344,9 @@ let rec parseStatement tokens =
 and parseBlockItem tokens =
     match tokens with
     // Declarations
-    | IntKey :: Identifier ident :: Lexer.Equal :: rest -> result {
-        let! expr, rest = parseExpression rest
-        let! rest = expectToken Semicolon rest
-        return Declaration (Identifier ident, Some expr), rest
-        }
-    | IntKey :: Identifier ident :: rest -> result {
-        let! rest = expectToken Semicolon rest
-        return Declaration (Identifier ident, None), rest
+    | IntKey :: _ -> result {
+        let! declaration, rest = parseDeclaration tokens
+        return Declaration declaration, rest
         }
     // Statements
     | _ :: _ ->
@@ -316,6 +370,34 @@ and parseBlock tokens =
             let! result, rest = loop rest []
             return (result:Block), rest
         }
+and parseDeclaration tokens =
+    match tokens with
+    // Declarations
+    | IntKey :: Identifier ident :: Lexer.Equal :: rest -> result {
+        let! expr, rest = parseExpression rest
+        let! rest = expectToken Semicolon rest
+        return ((Identifier ident, Some expr):Declaration), rest
+        }
+    | IntKey :: Identifier ident :: rest -> result {
+        let! rest = expectToken Semicolon rest
+        return (Identifier ident, None), rest
+        }
+    | unexpectedToken :: _ -> Error <| Message $"Expected Declaration, got {unexpectedToken}"
+    | [] -> Error suddenEOF
+        
+and parseForInit tokens =
+    match tokens with
+    | IntKey :: _ -> result {
+        let! declaration, rest = parseDeclaration tokens
+        return InitDeclaration declaration, rest
+        }
+    | Semicolon :: rest -> Ok (InitExpression None, rest)
+    | _ :: _ -> result {
+        let! expression, rest = parseExpression tokens
+        let! rest = expectToken Semicolon rest
+        return InitExpression (Some expression), rest
+        }
+    | [] -> Error suddenEOF
 
 let parseFunction tokens =
     result {

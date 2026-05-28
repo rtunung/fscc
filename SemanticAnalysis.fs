@@ -70,9 +70,9 @@ let resolveDeclaration (ident, expr) (variableMap, blockSet) =
 
         let expr = Option.map (fun x -> resolveExpression x variableMap) expr
         match expr with
-        | None -> Ok (Declaration (uniqueName, None), (variableMap, blockSet))
+        | None -> Ok (((uniqueName, None):Declaration), (variableMap, blockSet))
         | Some (Error error) -> Error error
-        | Some (Ok expr) -> Ok (Declaration (uniqueName, Some expr), (variableMap, blockSet))
+        | Some (Ok expr) -> Ok ((uniqueName, Some expr), (variableMap, blockSet))
 
 let rec resolveStatement statement (variableMap, blockSet) =
     match statement with
@@ -102,11 +102,57 @@ let rec resolveStatement statement (variableMap, blockSet) =
     | Compound block ->  result {
         let! newBlock = resolveBlock block variableMap
         return Compound newBlock
-    }
+        }
+    | DummyBreak -> Ok statement
+    | DummyContinue -> Ok statement
+    | DummyWhile(cond, body) -> result {
+        let! resolvedCond = resolveExpression cond variableMap
+        let! resolvedBody = resolveStatement body (variableMap, blockSet)
+        return DummyWhile (resolvedCond, resolvedBody)
+        }
+    | DummyDoWhile(body, cond) -> result {
+        let! resolvedBody = resolveStatement body (variableMap, blockSet)
+        let! resolvedCond = resolveExpression cond variableMap
+        return DummyDoWhile (resolvedBody, resolvedCond)
+        }
+    | DummyFor(init, cond, post, body) -> result {
+        let! resolvedInit, (variableMap, blockSet) = resolveForInit init variableMap
+        let! resolvedCond = resolveOptionalExpression cond variableMap
+        let! resolvedPost = resolveOptionalExpression post variableMap
+        let! resolvedBody = resolveStatement body (variableMap, blockSet)
+        return DummyFor (resolvedInit, resolvedCond, resolvedPost, resolvedBody)
+        }
+    
+    | Break _
+    | Continue _
+    | DoWhile _
+    | For _ 
+    | While _ -> failwith "Variable resolution needs to be performed before loop labeling"
+    
+    
+and resolveOptionalExpression expr variableMap =
+    expr
+    |> Option.map (fun x ->  resolveExpression x variableMap)
+    |> Option.sequenceResult
+    
+and resolveForInit init variableMap=
+    match init with
+    | InitExpression None -> Ok (InitExpression None, (variableMap, Set.empty))
+    | InitExpression (Some expr) -> result {
+        let! resolvedExpr = resolveExpression expr variableMap
+        return InitExpression (Some resolvedExpr), (variableMap, Set.empty)
+        }
+    | InitDeclaration declaration -> result {
+        let! resolvedDecl, state = resolveDeclaration declaration (variableMap, Set.empty)
+        return InitDeclaration resolvedDecl, state
+        }
 
 and resolveBlockItem item (variableMap, blockSet) =
     match item with
-    | Declaration declaration -> resolveDeclaration declaration (variableMap, blockSet)
+    | Declaration declaration -> result {
+        let! resolvedDecl, state = resolveDeclaration declaration (variableMap, blockSet)
+        return Declaration resolvedDecl, state
+        }
     | Statement statement -> result {
         let! statement = resolveStatement statement (variableMap, blockSet)
         return Statement statement, (variableMap, blockSet)
@@ -141,6 +187,7 @@ let resolveFunction variableMap (Function(funcName, blockItems)) = result {
 *)
 
 let rec resolveGotoStatement statement (labelMap, labelSet) =
+    let state = (labelMap, labelSet)
     match statement with
     | Goto name ->
         if Map.containsKey name labelMap then
@@ -180,6 +227,26 @@ let rec resolveGotoStatement statement (labelMap, labelSet) =
         let! newBlock, state = resolveGotoBlock block (labelMap, labelSet)
         return Compound newBlock, state
         }
+    | DummyBreak -> Ok (statement, state)
+    | DummyContinue -> Ok (statement, state)
+    | DummyWhile(cond, body) -> result {
+        let! resolvedBody, state = resolveGotoStatement body state
+        return DummyWhile (cond, resolvedBody), state
+        }
+    | DummyDoWhile(body, cond) -> result {
+        let! resolvedBody, state = resolveGotoStatement body state
+        return DummyDoWhile (resolvedBody, cond), state
+        }
+    | DummyFor(init, cond, post, body) -> result {
+        let! resolvedBody, state = resolveGotoStatement body state
+        return DummyFor (init, cond, post, resolvedBody), state
+        }
+    
+    | Break _
+    | Continue _
+    | While _
+    | DoWhile _
+    | For _ -> failwith "Goto resolution needs to be performed before loop labeling"
 
 and resolveGotoBlock items state =
     let rec resolve state item =
@@ -206,6 +273,78 @@ let resolveGotoFunction (Function(funcName, blockItems)) = result {
     return Function (funcName, newBlockItems)
     }
 
+// --------------------------------------- Loop Labeling -----------------------------------------------------------
+
+let rec resolveLoopStatement statement currentLabel =
+    match statement with
+     | DummyBreak ->
+         match currentLabel with
+         | Some label -> Ok (Break label)
+         | None -> Error <| Message "Break statement outside of loop"
+     | DummyContinue ->
+         match currentLabel with
+         | Some label -> Ok (Continue label)
+         | None -> Error <| Message "Continue statement outside of loop"
+     | DummyWhile (cond, body) -> result {
+        let newLabel = getLoopLabel ()
+        let! resolvedBody = resolveLoopStatement body (Some newLabel)
+        return While(cond, resolvedBody, newLabel)
+        }
+     | DummyDoWhile (body, cond) -> result {
+        let newLabel = getLoopLabel ()
+        let! resolvedBody = resolveLoopStatement body (Some newLabel)
+        return DoWhile(resolvedBody, cond, newLabel)
+        }
+     | DummyFor (init, cond, post, body) -> result {
+        let newLabel = getLoopLabel ()
+        let! resolvedBody = resolveLoopStatement body (Some newLabel)
+        return For(init, cond, post, resolvedBody, newLabel)
+        }
+     | Label (name, labelStatement) -> result {
+        let! resolvedStatement = resolveLoopStatement labelStatement currentLabel
+        return Label (name, resolvedStatement)
+        }
+     | Compound block -> result {
+        let! resolvedBlock = resolveLoopBlock block currentLabel
+        return Compound resolvedBlock
+        }
+     | If (cond, body, elseBody) -> result {
+        let! resolvedBody = resolveLoopStatement body currentLabel
+        let! resolvedElse =
+            elseBody
+            |> Option.map (fun x -> resolveLoopStatement x currentLabel)
+            |> Option.sequenceResult
+        return If (cond, resolvedBody, resolvedElse)
+        }
+     
+     | Expression _
+     | Goto _
+     | Null
+     | Return _ -> Ok statement
+     
+     | Break _
+     | Continue _
+     | While _
+     | DoWhile _
+     | For _ -> failwith "Loop labeling has already been done"
+
+
+and resolveLoopBlockItem currentLabel item =
+    match item with
+    | Statement statement -> Result.map Statement (resolveLoopStatement statement currentLabel)
+    | Declaration _ -> Ok item
+
+and resolveLoopBlock block currentLabel =
+   block
+   |> Seq.map (resolveLoopBlockItem currentLabel)
+   |> Seq.sequenceResultM
+   |> Result.map Array.toList
+
+let resolveLoopFunction (Function(name, body)) = result {
+    let! resolvedBody = resolveLoopBlock body None
+    return Function (name, resolvedBody)
+    }
+
 // ------------------------------- Complete Semantic Analysis ------------------------------------------------------
 
 let semanticAnalysis (Program func) =
@@ -213,5 +352,6 @@ let semanticAnalysis (Program func) =
     func
     |> resolveFunction newMap
     |> Result.bind resolveGotoFunction
+    |> Result.bind resolveLoopFunction
     |> Result.map Program
     
