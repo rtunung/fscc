@@ -313,7 +313,7 @@ let resolveGotoFunction (Function(funcName, blockItems)) = result {
 
 type SwitchResolutionState = SwitchState of currentSwitch: Identifier option * cases: (Identifier * Expression) list * defaults: Expression list
 
-let rec resolveSwitchStatement statement (currentSwitch, cases, defaults) =
+let rec resolveSwitchStatement statement (currentSwitch, inLoop, cases, defaults) =
     match statement with
     | DummyCase (Constant value, body) ->
         match currentSwitch with
@@ -322,7 +322,7 @@ let rec resolveSwitchStatement statement (currentSwitch, cases, defaults) =
             let expression = Constant value
             let caseLabel = getSwitchLabel ()
             let pair = (caseLabel, expression)
-            let! resolvedBody, (cases, defaults) = resolveSwitchStatement body (currentSwitch, cases, defaults)
+            let! resolvedBody, (cases, defaults) = resolveSwitchStatement body (currentSwitch, inLoop, cases, defaults)
             let thisCase = Case (caseLabel, resolvedBody)
             let allCaseExpressions =
                 cases
@@ -340,13 +340,13 @@ let rec resolveSwitchStatement statement (currentSwitch, cases, defaults) =
         | None -> Error <| Message "Default statement outside of switch"
         | Some _ -> result {
             let defaultLabel = getSwitchLabel ()
-            let! resolvedBody, (cases, defaults) = resolveSwitchStatement body (currentSwitch, cases, defaults)
+            let! resolvedBody, (cases, defaults) = resolveSwitchStatement body (currentSwitch, inLoop, cases, defaults)
             let thisDefault = Default (defaultLabel, resolvedBody)
             return (thisDefault, (cases, defaults @ [Identifier defaultLabel]))
             }
     | DummySwitch(argument, body) -> result {
         let label = getSwitchLabel ()
-        let! resolvedBody, (thisCases, thisDefaults) = resolveSwitchStatement body (Some label, Set.empty, List.empty)
+        let! resolvedBody, (thisCases, thisDefaults) = resolveSwitchStatement body (Some label, false, Set.empty, List.empty)
         if (List.length thisDefaults) > 1 then
             return! Error <| Message "More than one default statement in switch statement"
         else
@@ -354,35 +354,37 @@ let rec resolveSwitchStatement statement (currentSwitch, cases, defaults) =
             return Switch (argument, resolvedBody, thisCases, defaultCase, label), (cases, defaults)
         }
     | If (condition, body, elseOption) -> result {
-        let! resolvedBody, (cases, defaults) = resolveSwitchStatement body (currentSwitch, cases, defaults)
+        let! resolvedBody, (cases, defaults) = resolveSwitchStatement body (currentSwitch, inLoop, cases, defaults)
         match elseOption with
         | None -> return If (condition, resolvedBody, None), (cases, defaults)
         | Some elseBody ->
-            let! resolvedElse, (cases, defaults) = resolveSwitchStatement elseBody (currentSwitch, cases, defaults)
+            let! resolvedElse, (cases, defaults) = resolveSwitchStatement elseBody (currentSwitch, inLoop, cases, defaults)
             return If (condition, resolvedBody, Some resolvedElse), (cases, defaults)
         }
     | Label(name, statement) -> result {
-        let! resolvedStatement, (cases, defaults) = resolveSwitchStatement statement (currentSwitch, cases, defaults)
+        let! resolvedStatement, (cases, defaults) = resolveSwitchStatement statement (currentSwitch, inLoop, cases, defaults)
         return Label (name, resolvedStatement), (cases, defaults)
         }
     | DummyBreak ->
         match currentSwitch with
         | None -> Ok (DummyBreak, (cases, defaults))
-        | Some label -> Ok (SwitchBreak label, (cases, defaults))
+        | Some label ->
+            if inLoop then Ok (DummyBreak, (cases, defaults))
+            else Ok (SwitchBreak label, (cases, defaults))
     | DummyWhile (condition, body) -> result {
-        let! resolvedBody, (cases, defaults) = resolveSwitchStatement body (currentSwitch, cases, defaults)
+        let! resolvedBody, (cases, defaults) = resolveSwitchStatement body (currentSwitch, true, cases, defaults)
         return DummyWhile (condition, resolvedBody), (cases, defaults)
         }
     | DummyDoWhile(body, condition) -> result {
-        let! resolvedBody, (cases, defaults) = resolveSwitchStatement body (currentSwitch, cases, defaults)
+        let! resolvedBody, (cases, defaults) = resolveSwitchStatement body (currentSwitch, true, cases, defaults)
         return DummyDoWhile (resolvedBody, condition), (cases, defaults)
         }
     | DummyFor(forInit, condition, post, body) -> result {
-        let! resolvedBody, (cases, defaults) = resolveSwitchStatement body (currentSwitch, cases, defaults)
+        let! resolvedBody, (cases, defaults) = resolveSwitchStatement body (currentSwitch, true, cases, defaults)
         return DummyFor (forInit, condition, post, resolvedBody), (cases, defaults)
         }
     | Compound block -> result {
-        let! resolvedBlock, (cases, defaults) = resolveSwitchBlock block (currentSwitch, cases, defaults)
+        let! resolvedBlock, (cases, defaults) = resolveSwitchBlock block (currentSwitch, inLoop, cases, defaults)
         return Compound resolvedBlock, (cases, defaults)
         }
 
@@ -403,19 +405,19 @@ let rec resolveSwitchStatement statement (currentSwitch, cases, defaults) =
     | Default _
     | SwitchBreak _ -> failwith "Switch labeling has already been done"
     
-and resolveSwitchBlockItem item (currentSwitch, cases, defaults) =
+and resolveSwitchBlockItem item (currentSwitch, inLoop, cases, defaults) =
     match item with
     | Statement statement -> result {
-        let! resolvedStatement, (cases, defaults) = resolveSwitchStatement statement (currentSwitch, cases, defaults)
+        let! resolvedStatement, (cases, defaults) = resolveSwitchStatement statement (currentSwitch, inLoop, cases, defaults)
         return Statement resolvedStatement, (cases, defaults)
         }
     | Declaration _ -> Ok (item, (cases, defaults))
     
-and resolveSwitchBlock block (currentSwitch, cases, defaults) =
+and resolveSwitchBlock block (currentSwitch, inLoop, cases, defaults) =
     let rec loop (cases, defaults) items acc =
         match items with
         | item :: rest ->
-            let resolveResult = resolveSwitchBlockItem item (currentSwitch, cases, defaults)
+            let resolveResult = resolveSwitchBlockItem item (currentSwitch, inLoop, cases, defaults)
             match resolveResult with
             | Error error -> Error error
             | Ok (resolvedItem, (cases, defaults)) -> loop (cases, defaults) rest (acc @ [resolvedItem])
@@ -424,7 +426,7 @@ and resolveSwitchBlock block (currentSwitch, cases, defaults) =
     loop (cases, defaults) block []
 
 let resolveSwitchFunction (Function(name, body)) = result {
-    let! resolvedBody, _ = resolveSwitchBlock body (None, Set.empty, List.empty)
+    let! resolvedBody, _ = resolveSwitchBlock body (None, false, Set.empty, List.empty)
     return Function (name, resolvedBody)
     }
 
