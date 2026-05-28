@@ -241,7 +241,11 @@ let rec fromStatement statement =
             let comparison = Binary {| op = Equal; srcLeft = value; srcRight = arg; dst = cmpResult |}
             exprInstructions @ [comparison; makeJumpNotZero cmpResult label]
         
-        let conditionalChecks = List.collect genJumps cases
+        let conditionalChecks =
+            cases
+            |> Set.toList
+            |> List.collect genJumps 
+        
         let defaultJump =
             match defaultCase with
             | None -> []

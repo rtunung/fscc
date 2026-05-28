@@ -323,7 +323,15 @@ let rec resolveSwitchStatement statement (currentSwitch, cases, defaults) =
             let pair = (caseLabel, expression)
             let! resolvedBody, (cases, defaults) = resolveSwitchStatement body (currentSwitch, cases, defaults)
             let thisCase = Case (caseLabel, resolvedBody)
-            return (thisCase, (cases @ [pair], defaults))
+            let allCaseExpressions =
+                cases
+                |> Seq.map snd
+                
+            if Seq.contains expression allCaseExpressions then
+                return! Error <| Message $"Duplicate case statement of {expression}"
+            else
+                let cases = Set.add pair cases
+                return (thisCase, (cases, defaults))
             }
     | DummyDefault body ->
         match currentSwitch with
@@ -336,7 +344,7 @@ let rec resolveSwitchStatement statement (currentSwitch, cases, defaults) =
             }
     | DummySwitch(argument, body) -> result {
         let label = getSwitchLabel ()
-        let! resolvedBody, (thisCases, thisDefaults) = resolveSwitchStatement body (Some label, List.empty, List.empty)
+        let! resolvedBody, (thisCases, thisDefaults) = resolveSwitchStatement body (Some label, Set.empty, List.empty)
         if (List.length thisDefaults) > 1 then
             return! Error <| Message "More than one default statement in switch statement"
         else
@@ -414,7 +422,7 @@ and resolveSwitchBlock block (currentSwitch, cases, defaults) =
     loop (cases, defaults) block []
 
 let resolveSwitchFunction (Function(name, body)) = result {
-    let! resolvedBody, _ = resolveSwitchBlock body (None, List.empty, List.empty)
+    let! resolvedBody, _ = resolveSwitchBlock body (None, Set.empty, List.empty)
     return Function (name, resolvedBody)
     }
 

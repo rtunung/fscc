@@ -86,7 +86,7 @@ type Statement =
     | DummyDefault of body: Statement
     
     // Created from dummy statements in the semantic analysis stage
-    | Switch of argument: Expression * body: Statement * cases: (Identifier * Expression) list * defaultCase: Identifier option * label: Identifier
+    | Switch of argument: Expression * body: Statement * cases: (Identifier * Expression) Set * defaultCase: Identifier option * label: Identifier
     | Case of label: Identifier * body: Statement
     | Default of label: Identifier * body: Statement
     | SwitchBreak of label: Identifier
