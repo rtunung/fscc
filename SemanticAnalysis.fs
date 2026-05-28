@@ -315,10 +315,11 @@ type SwitchResolutionState = SwitchState of currentSwitch: Identifier option * c
 
 let rec resolveSwitchStatement statement (currentSwitch, cases, defaults) =
     match statement with
-    | DummyCase (expression, body) ->
+    | DummyCase (Constant value, body) ->
         match currentSwitch with
-        | None -> Error <| Message "case statement outside of switch"
+        | None -> Error <| Message "Case statement outside of switch"
         | Some _ -> result {
+            let expression = Constant value
             let caseLabel = getSwitchLabel ()
             let pair = (caseLabel, expression)
             let! resolvedBody, (cases, defaults) = resolveSwitchStatement body (currentSwitch, cases, defaults)
@@ -333,9 +334,10 @@ let rec resolveSwitchStatement statement (currentSwitch, cases, defaults) =
                 let cases = Set.add pair cases
                 return (thisCase, (cases, defaults))
             }
+    | DummyCase (nonConstant, _) -> Error <| Message $"Non-Constant case statement {nonConstant}"
     | DummyDefault body ->
         match currentSwitch with
-        | None -> Error <| Message "default statement outside of switch"
+        | None -> Error <| Message "Default statement outside of switch"
         | Some _ -> result {
             let defaultLabel = getSwitchLabel ()
             let! resolvedBody, (cases, defaults) = resolveSwitchStatement body (currentSwitch, cases, defaults)
