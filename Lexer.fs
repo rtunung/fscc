@@ -56,6 +56,16 @@ type Token =
     | LessEqual
     | QuestionMark
     | Colon
+    | PlusEqual
+    | MinusEqual
+    | StarEqual
+    | SlashEqual
+    | PercentageEqual
+    | AmpersandEqual
+    | PipeEqual
+    | CaretEqual
+    | ShiftLeftEqual
+    | ShiftRightEqual
     
     | EOF
 
@@ -144,61 +154,74 @@ let lexIdentifierKeyword lexer =
     token, nextLex
 
 let nextToken lexer =
+    let advLexer = advance lexer
     match peek lexer with
     | None -> Ok (EOF, lexer)
-    | Some ';' -> Ok ( Semicolon, advance lexer )
-    | Some '(' -> Ok ( ParenOpen, advance lexer )
-    | Some ')' -> Ok ( ParenClose, advance lexer )
-    | Some '{' -> Ok ( BraceOpen, advance lexer )
-    | Some '}' -> Ok ( BraceClose, advance lexer )
-    | Some '~' -> Ok ( Tilde, advance lexer )
-    | Some '*' -> Ok ( Asterisk, advance lexer )
-    | Some '/' -> Ok ( Slash, advance lexer )
-    | Some '%' -> Ok ( Percentage, advance lexer )
-    | Some '?' -> Ok ( QuestionMark, advance lexer)
-    | Some ':' -> Ok ( Colon, advance lexer )
+    | Some ';' -> Ok ( Semicolon, advLexer )
+    | Some '(' -> Ok ( ParenOpen, advLexer )
+    | Some ')' -> Ok ( ParenClose, advLexer )
+    | Some '{' -> Ok ( BraceOpen, advLexer )
+    | Some '}' -> Ok ( BraceClose, advLexer )
+    | Some '~' -> Ok ( Tilde, advLexer )
+    | Some '*' ->
+        match peek advLexer with
+        | Some '=' -> Ok(StarEqual, advance advLexer)
+        | _ -> Ok ( Asterisk, advLexer )
+    | Some '/' ->
+        match peek advLexer with
+        | Some '=' -> Ok (SlashEqual, advance advLexer)
+        | _ -> Ok ( Slash, advLexer )
+    | Some '%' ->
+        match peek advLexer with
+        | Some '=' -> Ok (PercentageEqual, advance advLexer)
+        | _ -> Ok ( Percentage, advLexer )
+    | Some '?' -> Ok ( QuestionMark, advLexer)
+    | Some ':' -> Ok ( Colon, advLexer )
     | Some '|' ->
-        let advLexer = advance lexer
         match peek advLexer with
         | Some '|' -> Ok (DoublePipe, advance advLexer)
+        | Some '=' -> Ok (PipeEqual, advance advLexer)
         | _ -> Ok ( Pipe, advLexer )
     | Some '&' ->
-        let advLexer = advance lexer
         match peek advLexer with
         | Some '&' -> Ok (DoubleAmpersand, advance advLexer)
+        | Some '=' -> Ok (AmpersandEqual, advance advLexer)
         | _ -> Ok ( Ampersand, advLexer )
-    | Some '^' -> Ok ( Caret, advance lexer )
+    | Some '^' ->
+        match peek advLexer with
+        | Some '=' -> Ok (CaretEqual, advance advLexer)
+        | _ -> Ok ( Caret, advLexer )
     | Some '!' ->
-        let advLexer = advance lexer
         match peek advLexer with
         | Some '=' -> Ok (ExclamationEqual, advance advLexer)
         | _ -> Ok (Exclamation, advLexer)
     | Some '>' ->
-        let advLexer = advance lexer
-        match peek advLexer with
-        | Some '>' -> Ok (ShiftRight, advance advLexer)
-        | Some '=' -> Ok (GreaterEqual, advance advLexer)
+        let dAdvLexer = advance advLexer
+        match peek advLexer, peek dAdvLexer with
+        | Some '>', Some '=' -> Ok (ShiftRightEqual, advance dAdvLexer)
+        | Some '>', _ -> Ok (ShiftRight, dAdvLexer)
+        | Some '=', _ -> Ok (GreaterEqual, dAdvLexer)
         | _ -> Ok (Greater, advLexer)
     | Some '<' ->
-        let advLexer = advance lexer
-        match peek advLexer with
-        | Some '<' -> Ok (ShiftLeft, advance advLexer)
-        | Some '=' -> Ok (LessEqual, advance advLexer)
+        let dAdvLexer = advance advLexer
+        match peek advLexer, peek dAdvLexer with
+        | Some '<', Some '=' -> Ok (ShiftLeftEqual, advance dAdvLexer)
+        | Some '<', _ -> Ok (ShiftLeft, dAdvLexer)
+        | Some '=', _ -> Ok (LessEqual, dAdvLexer)
         | _ -> Ok (Less, advLexer)
     | Some '=' ->
-        let advLexer = advance lexer
         match peek advLexer with
         | Some '=' -> Ok (DoubleEqual, advance advLexer)
         | _ -> Ok (Equal, advLexer)
     | Some '-' ->
-        let advLexer = advance lexer
         match peek advLexer with
         | Some '-' -> Ok ( Decrement, advance advLexer)
+        | Some '=' -> Ok ( MinusEqual, advance advLexer)
         | _ -> Ok ( Minus, advLexer )
     | Some '+' ->
-        let advLexer = advance lexer
         match peek advLexer with
         | Some '+' -> Ok ( Increment, advance advLexer)
+        | Some '=' -> Ok ( PlusEqual, advance advLexer)
         | _ -> Ok ( Plus, advLexer )
     | Some chr when Char.IsDigit(chr) ->  lexConstant lexer
     | Some chr when Char.IsLetter(chr) || chr = '_' -> Ok <| lexIdentifierKeyword lexer

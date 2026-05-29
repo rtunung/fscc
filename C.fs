@@ -159,6 +159,11 @@ let getBinaryPrecedence token =
     | DoublePipe -> 5
     | QuestionMark -> 3
     | Lexer.Equal -> 1
+    
+    | PlusEqual | MinusEqual | StarEqual | SlashEqual
+    | PercentageEqual | AmpersandEqual | PipeEqual | CaretEqual
+    | ShiftLeftEqual | ShiftRightEqual -> 1
+
     | _ -> -100
 
 let getNextPrecedence tokens =
@@ -189,6 +194,25 @@ let parseBinaryOperator tokens =
 
     | other :: _ -> Error <| Message $"Expected binary operation, got {other}"
     | [] -> Error <| suddenEOF
+
+let isCompoundAssignment token =
+    let allCompoundAssignments = [PlusEqual; MinusEqual; StarEqual; SlashEqual; PercentageEqual; AmpersandEqual; PipeEqual
+                                  CaretEqual; ShiftLeftEqual; ShiftRightEqual]
+    List.contains token allCompoundAssignments
+
+let getOperatorFromCompoundAssignment token =
+    match token with
+    | PlusEqual -> Plus
+    | MinusEqual -> Minus
+    | StarEqual -> Multiply
+    | SlashEqual -> Divide
+    | PercentageEqual -> Remainder
+    | AmpersandEqual -> BitwiseAnd
+    | PipeEqual -> BitwiseOr
+    | CaretEqual -> BitwiseXor
+    | ShiftLeftEqual -> ShiftLeft
+    | ShiftRightEqual -> ShiftRight
+    | _ -> failwith $"Token '{token}' is not a compound assignment operator. This should not happen."
 
 let rec parseFactor tokens =
     let factor =
@@ -249,6 +273,11 @@ and parseExpressionPrecedence tokens minPrecedence =
                     let! middle, rest = parseConditionalMiddle tokens
                     let! right, rest = parseExpressionPrecedence rest nextPrecedence
                     return Conditional (left, middle, right), rest
+                | Some compoundToken when isCompoundAssignment compoundToken ->
+                    let operator = getOperatorFromCompoundAssignment compoundToken
+                    let rest = List.tail tokens
+                    let! right, rest = parseExpressionPrecedence rest nextPrecedence
+                    return Assignment (left, Binary (operator, left, right)), rest
                 | _ ->
                     let! operator, rest = parseBinaryOperator tokens
                     let! right, rest = parseExpressionPrecedence rest (nextPrecedence + 1)
