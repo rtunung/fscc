@@ -19,12 +19,13 @@ let private isIncrementDecrement op =
 (*
     The identifiers names need to be mapped to globally unique names.
     However, identifiers with external linkage need to keep their original name, otherwise linking will fail.
-    To achieve this, we need track a state as we resolve the new identifier names.
+    To achieve this, we need to track a state as we resolve the new identifier names.
     The state has the following members:
-    - variableMap: A map from in C defined variable identifiers to globally unique identifiers
-    - blockSet: A set that contains all variable names that are declared in the current block (Does not include parent or child blocks)
+    - identifierMap: A map from in C defined variable identifiers to globally unique identifiers
+    - scopeSet: A set that contains all variable names that are declared in the current scope (Does not include parent or child blocks)
         -> Detect multiple declarations in the same block.
         -> Allows for shadowing of variable identifiers once you go into a child block
+   - linkageSet: A set that tracks which identifiers are externally linked
 *)
 
 let rec resolveExpression expr (identifierMap:Map<Identifier, Identifier>) =
@@ -61,89 +62,78 @@ let rec resolveExpression expr (identifierMap:Map<Identifier, Identifier>) =
         return Conditional(cond, middle, right)
         }
     | FunctionCall(name, args) ->
-        let resolvedArgsResult =
-            args
-            |> Seq.map (fun x -> resolveExpression x identifierMap)
-            |> Seq.sequenceResultM
-            |> Result.map Array.toList
-        match resolvedArgsResult with
-        | Error error -> Error error
-        | Ok resolvedArgs -> Ok (FunctionCall (name, resolvedArgs))
+        if Map.containsKey name identifierMap then
+            let resolvedArgsResult =
+                args
+                |> Seq.map (fun x -> resolveExpression x identifierMap)
+                |> Seq.sequenceResultM
+                |> Result.map Array.toList
+            match resolvedArgsResult with
+            | Error error -> Error error
+            | Ok resolvedArgs -> Ok (FunctionCall (name, resolvedArgs))
+        else
+            Error <| Message $"Function identifier {name} was not declared"
 
-let resolveDeclaration (Variable (ident, expr)) (variableMap, blockSet) =
-    if Set.contains ident blockSet then
-        Error <| Message $"Duplicate variable declaration of {ident}"
-    else
-        let uniqueName = Identifier (getTemporaryName ())
-        let variableMap = Map.add ident uniqueName variableMap
-        let blockSet = Set.add ident blockSet
-
-        let expr = Option.map (fun x -> resolveExpression x variableMap) expr
-        match expr with
-        | None -> Ok (Variable(uniqueName, None), (variableMap, blockSet))
-        | Some (Error error) -> Error error
-        | Some (Ok expr) -> Ok (Variable(uniqueName, Some expr), (variableMap, blockSet))
-
-let rec resolveStatement statement (variableMap, blockSet) =
+let rec resolveStatement statement (identifierMap, scopeSet, linkageSet) =
     match statement with
     | Null -> Ok Null
     | Return expr -> result {
-        let! expr = resolveExpression expr variableMap
+        let! expr = resolveExpression expr identifierMap
         return Return expr
         }
     | Expression expr ->  result {
-        let! expr = resolveExpression expr variableMap
+        let! expr = resolveExpression expr identifierMap
         return Expression expr
         }
     | If (cond, ifBody, elseBody) -> result {
-        let! cond = resolveExpression cond variableMap
-        let! ifBody = resolveStatement ifBody (variableMap,blockSet)
+        let! cond = resolveExpression cond identifierMap
+        let! ifBody = resolveStatement ifBody (identifierMap, scopeSet, linkageSet)
         match elseBody with
         | None -> return If (cond, ifBody, None)
         | Some elseBody ->
-            let! elseBody = resolveStatement elseBody (variableMap, blockSet)
+            let! elseBody = resolveStatement elseBody (identifierMap, scopeSet, linkageSet)
             return If (cond, ifBody, Some elseBody)
             }
     | Label (name, labelStatement) -> result {
-        let! labelStatement = resolveStatement labelStatement (variableMap, blockSet)
+        let! labelStatement = resolveStatement labelStatement (identifierMap, scopeSet, linkageSet)
         return Label (name, labelStatement)
         }
     | Goto _ -> Ok statement
     | Compound block ->  result {
-        let! newBlock = resolveBlock block variableMap
+        let! newBlock = resolveBlock block (identifierMap, Set.empty, linkageSet)
         return Compound newBlock
         }
     | DummyBreak -> Ok statement
     | DummyContinue -> Ok statement
     | DummyWhile(cond, body) -> result {
-        let! resolvedCond = resolveExpression cond variableMap
-        let! resolvedBody = resolveStatement body (variableMap, blockSet)
+        let! resolvedCond = resolveExpression cond identifierMap
+        let! resolvedBody = resolveStatement body (identifierMap, scopeSet, linkageSet)
         return DummyWhile (resolvedCond, resolvedBody)
         }
     | DummyDoWhile(body, cond) -> result {
-        let! resolvedBody = resolveStatement body (variableMap, blockSet)
-        let! resolvedCond = resolveExpression cond variableMap
+        let! resolvedBody = resolveStatement body (identifierMap, scopeSet, linkageSet)
+        let! resolvedCond = resolveExpression cond identifierMap
         return DummyDoWhile (resolvedBody, resolvedCond)
         }
     | DummyFor(init, cond, post, body) -> result {
-        let! resolvedInit, (variableMap, blockSet) = resolveForInit init variableMap
-        let! resolvedCond = resolveOptionalExpression cond variableMap
-        let! resolvedPost = resolveOptionalExpression post variableMap
-        let! resolvedBody = resolveStatement body (variableMap, blockSet)
+        let! resolvedInit, (identifierMap, scopeSet, linkageSet) = resolveForInit init (identifierMap, linkageSet)
+        let! resolvedCond = resolveOptionalExpression cond identifierMap
+        let! resolvedPost = resolveOptionalExpression post identifierMap
+        let! resolvedBody = resolveStatement body (identifierMap, scopeSet, linkageSet)
         return DummyFor (resolvedInit, resolvedCond, resolvedPost, resolvedBody)
         }
     | DummySwitch (argument, body) -> result {
-        let! resolvedArgument = resolveExpression argument variableMap
-        let! resolvedBody = resolveStatement body (variableMap, blockSet)
+        let! resolvedArgument = resolveExpression argument identifierMap
+        let! resolvedBody = resolveStatement body (identifierMap, scopeSet, linkageSet)
         return DummySwitch (resolvedArgument,  resolvedBody)
         }
     | DummyCase (case, body) -> result {
-        let! resolvedCase = resolveExpression case variableMap
-        let! resolvedBody = resolveStatement body (variableMap, blockSet)
+        let! resolvedCase = resolveExpression case identifierMap
+        let! resolvedBody = resolveStatement body (identifierMap, scopeSet, linkageSet)
         return DummyCase (resolvedCase, resolvedBody)
         }
     | DummyDefault body -> result {
-        let! resolvedBody = resolveStatement body (variableMap, blockSet)
+        let! resolvedBody = resolveStatement body (identifierMap, scopeSet, linkageSet)
         return DummyDefault resolvedBody
         }
         
@@ -159,60 +149,118 @@ let rec resolveStatement statement (variableMap, blockSet) =
     | SwitchBreak _ -> failwith "Variable resolution needs to be performed before switch labeling"
 
 
-and resolveOptionalExpression expr variableMap =
+and resolveOptionalExpression expr identifierMap =
     expr
-    |> Option.map (fun x ->  resolveExpression x variableMap)
+    |> Option.map (fun x ->  resolveExpression x identifierMap)
     |> Option.sequenceResult
     
-and resolveForInit init variableMap=
+and resolveForInit init (identifierMap, linkageSet)=
     match init with
-    | InitExpression None -> Ok (InitExpression None, (variableMap, Set.empty))
+    | InitExpression None -> Ok (InitExpression None, (identifierMap, Set.empty, linkageSet))
     | InitExpression (Some expr) -> result {
-        let! resolvedExpr = resolveExpression expr variableMap
-        return InitExpression (Some resolvedExpr), (variableMap, Set.empty)
+        let! resolvedExpr = resolveExpression expr identifierMap
+        return InitExpression (Some resolvedExpr), (identifierMap, Set.empty, linkageSet)
         }
     | InitDeclaration declaration -> result {
-        let! resolvedDecl, state = resolveDeclaration declaration (variableMap, Set.empty)
+        let! resolvedDecl, state = resolveVariableDeclaration declaration (identifierMap, Set.empty, linkageSet)
         return InitDeclaration resolvedDecl, state
         }
 
-and resolveBlockItem item (variableMap, blockSet) =
+and resolveBlockItem item (identifierMap, scopeSet, linkageSet) =
     match item with
     | Declaration (VariableDecl declaration) -> result {
-        let! resolvedDecl, state = resolveDeclaration declaration (variableMap, blockSet)
+        let! resolvedDecl, state = resolveVariableDeclaration declaration (identifierMap, scopeSet, linkageSet)
         return Declaration (VariableDecl resolvedDecl), state
         }
-    | Declaration (FunctionDecl func) -> failwith "TODO" // TODO 
+    | Declaration (FunctionDecl (Function (_, _, None) as func)) -> result {
+        let! resolvedFunc, state = resolveFunctionDeclaration func (identifierMap, scopeSet, linkageSet)
+        return Declaration (FunctionDecl resolvedFunc), state
+        }
+    | Declaration (FunctionDecl (Function (name, _, _))) -> Error <| Message $"Nested function definition are invalid. Function: {name}" 
     | Statement statement -> result {
-        let! statement = resolveStatement statement (variableMap, blockSet)
-        return Statement statement, (variableMap, blockSet)
+        let! statement = resolveStatement statement (identifierMap, scopeSet, linkageSet)
+        return Statement statement, (identifierMap, scopeSet, linkageSet)
         }
     
-and resolveBlock items variableMap =
-    let rec loop items (variableMap, blockSet) acc =
+and resolveBlock items (identifierMap, scopeSet, linkageSet) =
+    let rec loop items (identifierMap, scopeSet, linkageSet) acc =
         match items with
         | [] -> Ok acc
         | item :: rest ->
-            let resolvedItem = resolveBlockItem item (variableMap, blockSet)
+            let resolvedItem = resolveBlockItem item (identifierMap, scopeSet, linkageSet)
             match resolvedItem with
             | Error error -> Error error
-            | Ok (newItem, (variableMap, blockSet)) -> loop rest (variableMap, blockSet) (acc @ [newItem])
+            | Ok (newItem, (variableMap, scopeSet, linkageSet)) -> loop rest (variableMap, scopeSet, linkageSet) (acc @ [newItem])
     
-    loop items (variableMap, Set.empty) []
-    
-let resolveFunction variableMap (Function(name, parameters, body)) =
-    match body with
-    | None -> Ok (Function (name, parameters, None))
-    | Some block -> result {
-        let! resolvedBlock = resolveBlock block variableMap
-        return Function (name, parameters, Some resolvedBlock)
-        }
+    loop items (identifierMap, scopeSet, linkageSet) []
+   
+and resolveVariableDeclaration (Variable (ident, expr)) (identifierMap, scopeSet, linkageSet) =
+    if Set.contains ident scopeSet then
+        Error <| Message $"Duplicate variable declaration of {ident}"
+    else
+        let uniqueName = Identifier (getTemporaryName ())
+        let identifierMap = Map.add ident uniqueName identifierMap
+        let blockSet = Set.add ident scopeSet
 
+        let expr = Option.map (fun x -> resolveExpression x identifierMap) expr
+        match expr with
+        | None -> Ok (Variable(uniqueName, None), (identifierMap, blockSet, linkageSet))
+        | Some (Error error) -> Error error
+        | Some (Ok expr) -> Ok (Variable(uniqueName, Some expr), (identifierMap, blockSet, linkageSet))
+    
+and resolveFunctionDeclaration (Function (name, parameters, body)) (identifierMap, scopeSet, linkageSet) =
+    let checkForDuplicate =
+        if Map.containsKey name identifierMap then
+            if Set.contains name scopeSet && not (Set.contains name linkageSet) then
+                Error <| Message $"Duplicate declaration of {name}"
+            else
+                Ok ()
+        else
+            Ok ()
+            
+    let resolveParameter (identifierMap, paramSet) parameter =
+        if Set.contains parameter paramSet then
+            Error <| Message $"Duplicate parameter definition of {parameter}"
+        else
+            let tmp = Identifier (getTemporaryName ())
+            let paramSet = Set.add parameter paramSet
+            Ok (tmp, (Map.add parameter tmp identifierMap, paramSet))
+    let rec resolveParameters state parameters acc =
+        match parameters with
+        | [] -> Ok (acc, state)
+        | para :: rest ->
+            let result = resolveParameter state para
+            match result with
+            | Error error -> Error error
+            | Ok (resolvedPara, state) -> resolveParameters state rest (acc @ [resolvedPara])
+    
+    result {
+        let! () = checkForDuplicate
+        let identifierMap = Map.add name name identifierMap
+        let scopeSet = Set.add name scopeSet
+        let linkageSet = Set.add name linkageSet
+        
+        let! resolvedParameters, (newIdentifierMap, newScopeSet) = resolveParameters (identifierMap, Set.empty) parameters []
+        
+        let! resolvedBody =
+            body
+            |> Option.map (fun x -> resolveBlock x (newIdentifierMap, newScopeSet, linkageSet))
+            |> Option.sequenceResult
+        
+        return Function (name, resolvedParameters, resolvedBody), (identifierMap, scopeSet, linkageSet)
+    }
+    
 let resolveProgram (Program functions) =
-    functions
-    |> Seq.map (fun x -> resolveFunction Map.empty x)
-    |> Seq.sequenceResultM
-    |> Result.map Array.toList
+    let rec resolveFunctions state funcs acc =
+        match funcs with
+        | [] -> Ok acc
+        | func :: rest ->
+            let result = resolveFunctionDeclaration func state
+            match result with
+            | Error error -> Error error
+            | Ok (resolvedFunc, state) -> resolveFunctions state rest (acc @ [resolvedFunc])
+    
+    resolveFunctions (Map.empty, Set.empty, Set.empty) functions []
     |> Result.map Program
 
 // ---------------------------------------------- Resolve Goto Labels ------------------------------------------------

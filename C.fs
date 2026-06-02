@@ -329,7 +329,7 @@ and parseArgumentList tokens acc =
     | Ok (expr, rest) ->
         match rest with
         | Comma :: rest -> parseArgumentList rest (acc @ [expr])
-        | _ -> Ok (acc, rest)
+        | _ -> Ok (acc @ [expr], rest)
 
 let parseOptionalExpression tokens =
     let result = parseExpression tokens
