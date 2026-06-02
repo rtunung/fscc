@@ -51,14 +51,20 @@ type BinaryOperator =
 type Expression =
     | Constant of int
     | Var of Identifier
-    | Assignment of Expression * Expression
+    | Assignment of lvalue: Expression * rvalue: Expression
     | Unary of UnaryOperator * Expression
-    | Binary of BinaryOperator * Expression * Expression
+    | Binary of BinaryOperator * left: Expression * right: Expression
     | Conditional of condition: Expression * Expression * Expression
+    | FunctionCall of Identifier * args: Expression list
 
-type Declaration = Identifier * Expression option
+type Declaration =
+    | VariableDecl of VariableDeclaration
+    | FunctionDecl of FunctionDeclaration
+    
+and VariableDeclaration =
+    Variable of Identifier * Expression option
 
-type Statement =
+and Statement =
     | Return of Expression
     | Expression of Expression
     | If of condition: Expression  * Statement * Statement option
@@ -94,7 +100,7 @@ type Statement =
     | Null
 
 and ForInit =
-    | InitDeclaration of Declaration
+    | InitDeclaration of VariableDeclaration
     | InitExpression of Expression option
 
 and BlockItem =
@@ -103,10 +109,10 @@ and BlockItem =
 
 and Block = BlockItem list
 
-type FunctionDefinition =
-    Function of Identifier * Block
+and FunctionDeclaration =
+    Function of Identifier * parameters: Identifier list * body: Block option
 
-type Program = Program of FunctionDefinition
+type Program = Program of FunctionDeclaration list
 
 type ParserError =
     | Message of string
@@ -217,8 +223,18 @@ let getOperatorFromCompoundAssignment token =
 let rec parseFactor tokens =
     let factor =
         match tokens with
+        // Constants
         | Lexer.Constant value :: rest -> Ok (Constant value, rest)
+        // Function calls
+        | Lexer.Identifier funcName :: ParenOpen :: ParenClose :: rest -> Ok (FunctionCall (funcName, []), rest)
+        | Lexer.Identifier funcName :: ParenOpen :: rest -> result {
+            let! args, rest = parseArgumentList rest []
+            let! rest = expectToken ParenClose rest
+            return FunctionCall (funcName, args), rest
+            }
+        // Variables
         | Lexer.Identifier ident :: rest -> Ok (Var ident, rest)
+        
         // Parsing Unary Operators
         | Tilde :: rest -> result {
             let! exp, restTokens = parseFactor rest
@@ -240,6 +256,7 @@ let rec parseFactor tokens =
             let! exp, restTokens = parseFactor rest
             return Unary (PrefixDecrement, exp), restTokens
             }
+        
         // Parse Expression inside parentheses
         | ParenOpen :: rest -> result {
             let! exp, restTokens = parseExpression rest
@@ -304,6 +321,15 @@ and parseConditionalMiddle tokens = result {
     let! rest = expectToken Colon rest
     return expr, rest
 }
+
+and parseArgumentList tokens acc =
+    let resultExpression = parseExpression tokens
+    match resultExpression with
+    | Error error -> Error error
+    | Ok (expr, rest) ->
+        match rest with
+        | Comma :: rest -> parseArgumentList rest (acc @ [expr])
+        | _ -> Ok (acc, rest)
 
 let parseOptionalExpression tokens =
     let result = parseExpression tokens
@@ -401,9 +427,13 @@ let rec parseStatement tokens =
 and parseBlockItem tokens =
     match tokens with
     // Declarations
-    | IntKey :: _ -> result {
-        let! declaration, rest = parseDeclaration tokens
-        return Declaration declaration, rest
+    | IntKey :: Lexer.Identifier _ :: ParenOpen :: _ -> result {
+        let! func, rest = parseFunction tokens
+        return Declaration (FunctionDecl func), rest
+        }
+    | IntKey :: Lexer.Identifier _ :: _ -> result {
+        let! declaration, rest = parseVariableDeclaration tokens
+        return Declaration (VariableDecl declaration), rest
         }
     // Statements
     | _ :: _ ->
@@ -427,17 +457,17 @@ and parseBlock tokens =
             let! result, rest = loop rest []
             return (result:Block), rest
         }
-and parseDeclaration tokens =
+and parseVariableDeclaration tokens =
     match tokens with
     // Declarations
     | IntKey :: Identifier ident :: Lexer.Equal :: rest -> result {
         let! expr, rest = parseExpression rest
         let! rest = expectToken Semicolon rest
-        return ((Identifier ident, Some expr):Declaration), rest
+        return Variable (ident, Some expr), rest
         }
     | IntKey :: Identifier ident :: rest -> result {
         let! rest = expectToken Semicolon rest
-        return (Identifier ident, None), rest
+        return Variable (ident, None), rest
         }
     | unexpectedToken :: _ -> Error <| Message $"Expected Declaration, got {unexpectedToken}"
     | [] -> Error suddenEOF
@@ -445,7 +475,7 @@ and parseDeclaration tokens =
 and parseForInit tokens =
     match tokens with
     | IntKey :: _ -> result {
-        let! declaration, rest = parseDeclaration tokens
+        let! declaration, rest = parseVariableDeclaration tokens
         return InitDeclaration declaration, rest
         }
     | Semicolon :: rest -> Ok (InitExpression None, rest)
@@ -456,21 +486,54 @@ and parseForInit tokens =
         }
     | [] -> Error suddenEOF
 
-let parseFunction tokens =
+and parseParameterList tokens =
+    let rec loop tokens acc =
+        match tokens with
+        | IntKey :: Lexer.Identifier name :: Comma :: rest ->
+            loop rest (acc @ [Identifier name])
+        | IntKey :: Lexer.Identifier name :: rest ->
+            Ok (acc @ [Identifier name], rest)
+        | unexpected :: _ -> Error <| Message $"Unexpected token {unexpected} in parameter list declaration"
+        | [] -> Error suddenEOF
+
+    match tokens with
+    | VoidKey :: rest -> Ok ([], rest)
+    | IntKey :: _ -> loop tokens []
+    | unexpected :: _ -> Error <| Message $"Unexpected token {unexpected} in parameter list declaration"
+    | [] -> Error suddenEOF
+
+and parseFunction tokens =
+    let parseOptionalBody tokens =
+        match tokens with
+        | Semicolon :: rest -> Ok (None, rest)
+        | _ -> result {
+            let! block, rest = parseBlock tokens
+            return Some block, rest
+            }
+        
     result {
         let! rest = expectToken IntKey tokens
-        let! identifier, rest = parseIdentifier rest
+        let! name, rest = parseIdentifier rest
         let! rest = expectToken ParenOpen rest
-        let! rest = expectToken VoidKey rest
+        let! parameters, rest = parseParameterList rest
         let! rest = expectToken ParenClose rest
-        let! block, rest = parseBlock rest
-        return Function (identifier, block), rest
+        let! body, rest = parseOptionalBody rest
+        return Function (name, parameters, body), rest
     }
 
 let parseProgram tokens : Result<Program, ParserError> =
-    let prog, nextTokens =
-        match parseFunction tokens with
-        | Error error -> Error error, tokens
-        | Ok (func, nextTokens) -> Ok (Program func), nextTokens
-    if (List.isEmpty nextTokens) || (Result.isError prog) then prog
-    else Error <| Message "Unexpected tokens after the end of program"
+    
+    let rec parseListOfFunctions tokens acc =
+        match tokens with
+        | [] -> Ok acc
+        | _ ->
+            let func = parseFunction tokens
+            match func with
+            | Error error -> Error error
+            | Ok (func, rest) -> parseListOfFunctions rest (acc @ [func])
+    
+    result {
+        let! functions = parseListOfFunctions tokens []
+        return Program functions
+    }
+    

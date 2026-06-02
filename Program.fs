@@ -13,7 +13,9 @@ let onlyTacky = args.Contains "--tacky"
 let onlyAssembly = args.Contains "--assembly"
 let onlyValidate = args.Contains "--validate"
 
-let filterArgs = ["--parse"; "--lex"; "--codegen"; "--tacky"; "--assembly"; "--validate"]
+let compileObjectFile = args.Contains "-c"
+
+let filterArgs = ["--parse"; "--lex"; "--codegen"; "--tacky"; "--assembly"; "--validate"; "-c"]
 let inputFile =
     args
     |> Seq.skip 1
@@ -105,7 +107,12 @@ let outputFile =
 let outputAssembly = outputFile + ".s"
 
 File.WriteAllText (outputAssembly, assemblyString)
-let proc = Process.Start ("gcc", $"{outputAssembly} -o {outputFile}")
+let proc =
+        if compileObjectFile then
+            Process.Start ("gcc", $"-c {outputAssembly} -o {outputFile}")
+        else
+            Process.Start ("gcc", $"{outputAssembly} -o {outputFile}")
+        
 proc.WaitForExit ()
 let gccExitCode = proc.ExitCode
 

@@ -31,6 +31,7 @@ type Token =
     | BraceOpen
     | BraceClose
     | Semicolon
+    | Comma
     | Tilde
     | Minus
     | Decrement
@@ -163,6 +164,7 @@ let nextToken lexer =
     | Some '{' -> Ok ( BraceOpen, advLexer )
     | Some '}' -> Ok ( BraceClose, advLexer )
     | Some '~' -> Ok ( Tilde, advLexer )
+    | Some ',' -> Ok (Comma, advLexer)
     | Some '*' ->
         match peek advLexer with
         | Some '=' -> Ok(StarEqual, advance advLexer)

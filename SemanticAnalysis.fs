@@ -14,53 +14,63 @@ let private isIncrementDecrement op =
     | PrefixIncrement -> true
     | _ -> false
 
-// ------------------------------------- Resolve Variable Identifiers --------------------------------------------------
+// ------------------------------------- Resolve Identifiers --------------------------------------------------
 
 (*
-    The variable names need to be mapped to globally unique names.
-    To achieve this, we need track a state as we resolve the new variables names.
+    The identifiers names need to be mapped to globally unique names.
+    However, identifiers with external linkage need to keep their original name, otherwise linking will fail.
+    To achieve this, we need track a state as we resolve the new identifier names.
     The state has the following members:
     - variableMap: A map from in C defined variable identifiers to globally unique identifiers
-    - blockSet: A set that contains all variables that are declared in the current block (Does not include parent or child blocks)
+    - blockSet: A set that contains all variable names that are declared in the current block (Does not include parent or child blocks)
         -> Detect multiple declarations in the same block.
         -> Allows for shadowing of variable identifiers once you go into a child block
 *)
 
-let rec resolveExpression expr (variableMap:Map<Identifier, Identifier>) =
+let rec resolveExpression expr (identifierMap:Map<Identifier, Identifier>) =
     match expr with
     | Assignment (Var left, right) -> result {
-        let! left = resolveExpression (Var left) variableMap
-        let! right = resolveExpression right variableMap
+        let! left = resolveExpression (Var left) identifierMap
+        let! right = resolveExpression right identifierMap
         return Assignment (left, right)
         }
     | Assignment (invalid, _) -> Error <| Message $"Invalid lvalue {invalid}"
-    | Var name when Map.containsKey name variableMap ->
-        let uniqueName = Map.find name variableMap
+    | Var name when Map.containsKey name identifierMap ->
+        let uniqueName = Map.find name identifierMap
         Ok (Var uniqueName)
     | Var undeclared -> Error <| Message $"Variable {undeclared} is undeclared"
     | Constant _ -> Ok expr
     | Unary (inc, Var a) when isIncrementDecrement inc -> result {
-        let! expr = resolveExpression (Var a) variableMap
+        let! expr = resolveExpression (Var a) identifierMap
         return Unary (inc, expr)
         }
     | Unary (inc, invalid) when isIncrementDecrement inc -> Error <| Message $"Invalid lvalue {invalid} for operator {inc}"
     | Unary(operator, expression) -> result {
-        let! expression = resolveExpression expression variableMap
+        let! expression = resolveExpression expression identifierMap
         return Unary(operator, expression)
         }
     | Binary(operator, left, right) -> result {
-        let! left = resolveExpression left variableMap
-        let! right = resolveExpression right variableMap
+        let! left = resolveExpression left identifierMap
+        let! right = resolveExpression right identifierMap
         return Binary(operator, left, right)
         }
     | Conditional(cond, middle, right) -> result {
-        let! cond = resolveExpression cond variableMap
-        let! middle = resolveExpression middle variableMap
-        let! right = resolveExpression right variableMap
+        let! cond = resolveExpression cond identifierMap
+        let! middle = resolveExpression middle identifierMap
+        let! right = resolveExpression right identifierMap
         return Conditional(cond, middle, right)
         }
+    | FunctionCall(name, args) ->
+        let resolvedArgsResult =
+            args
+            |> Seq.map (fun x -> resolveExpression x identifierMap)
+            |> Seq.sequenceResultM
+            |> Result.map Array.toList
+        match resolvedArgsResult with
+        | Error error -> Error error
+        | Ok resolvedArgs -> Ok (FunctionCall (name, resolvedArgs))
 
-let resolveDeclaration (ident, expr) (variableMap, blockSet) =
+let resolveDeclaration (Variable (ident, expr)) (variableMap, blockSet) =
     if Set.contains ident blockSet then
         Error <| Message $"Duplicate variable declaration of {ident}"
     else
@@ -70,9 +80,9 @@ let resolveDeclaration (ident, expr) (variableMap, blockSet) =
 
         let expr = Option.map (fun x -> resolveExpression x variableMap) expr
         match expr with
-        | None -> Ok (((uniqueName, None):Declaration), (variableMap, blockSet))
+        | None -> Ok (Variable(uniqueName, None), (variableMap, blockSet))
         | Some (Error error) -> Error error
-        | Some (Ok expr) -> Ok ((uniqueName, Some expr), (variableMap, blockSet))
+        | Some (Ok expr) -> Ok (Variable(uniqueName, Some expr), (variableMap, blockSet))
 
 let rec resolveStatement statement (variableMap, blockSet) =
     match statement with
@@ -168,10 +178,11 @@ and resolveForInit init variableMap=
 
 and resolveBlockItem item (variableMap, blockSet) =
     match item with
-    | Declaration declaration -> result {
+    | Declaration (VariableDecl declaration) -> result {
         let! resolvedDecl, state = resolveDeclaration declaration (variableMap, blockSet)
-        return Declaration resolvedDecl, state
+        return Declaration (VariableDecl resolvedDecl), state
         }
+    | Declaration (FunctionDecl func) -> failwith "TODO" // TODO 
     | Statement statement -> result {
         let! statement = resolveStatement statement (variableMap, blockSet)
         return Statement statement, (variableMap, blockSet)
@@ -189,10 +200,20 @@ and resolveBlock items variableMap =
     
     loop items (variableMap, Set.empty) []
     
-let resolveFunction variableMap (Function(funcName, blockItems)) = result {
-    let! resolvedItem = resolveBlock blockItems variableMap
-    return Function (funcName, resolvedItem)
-    }
+let resolveFunction variableMap (Function(name, parameters, body)) =
+    match body with
+    | None -> Ok (Function (name, parameters, None))
+    | Some block -> result {
+        let! resolvedBlock = resolveBlock block variableMap
+        return Function (name, parameters, Some resolvedBlock)
+        }
+
+let resolveProgram (Program functions) =
+    functions
+    |> Seq.map (fun x -> resolveFunction Map.empty x)
+    |> Seq.sequenceResultM
+    |> Result.map Array.toList
+    |> Result.map Program
 
 // ---------------------------------------------- Resolve Goto Labels ------------------------------------------------
 
@@ -201,7 +222,7 @@ let resolveFunction variableMap (Function(funcName, blockItems)) = result {
     To achieve this, we need track a state as we resolve the new label names.
     Labels and gotos work only inside a function; meaning for each function a new state is used.
     The state has the following members:
-    - labelMap: A map from in C defiend labels to globally uninque labels
+    - labelMap: A map from in C defined labels to globally unique labels
     - labelSet: A set that tracks all defined labels, in order to detect labels with multiple definitions
 *)
 
@@ -303,11 +324,21 @@ and resolveGotoBlock items state =
     | Error error -> Error error
     | Ok block -> Ok (block, newState)
 
-let resolveGotoFunction (Function(funcName, blockItems)) = result {
-    let emptyState = (Map.empty, Set.empty)
-    let! newBlockItems, _ = resolveGotoBlock blockItems emptyState
-    return Function (funcName, newBlockItems)
-    }
+let resolveGotoFunction (Function(name, parameters, body)) =
+    match body with
+    | None -> Ok (Function (name, parameters, None))
+    | Some block -> result {
+        let emptyState = (Map.empty, Set.empty)
+        let! resolvedBlock, _ = resolveGotoBlock block emptyState
+        return Function (name, parameters, Some resolvedBlock)
+        }
+
+let rec resolveGotoProgram (Program functions) =
+    functions
+    |> Seq.map resolveGotoFunction
+    |> Seq.sequenceResultM
+    |> Result.map Array.toList
+    |> Result.map Program
 
 // ------------------------------------- Switch Labeling -----------------------------------------------------------
 
@@ -425,10 +456,20 @@ and resolveSwitchBlock block (currentSwitch, inLoop, cases, defaults) =
     
     loop (cases, defaults) block []
 
-let resolveSwitchFunction (Function(name, body)) = result {
-    let! resolvedBody, _ = resolveSwitchBlock body (None, false, Set.empty, List.empty)
-    return Function (name, resolvedBody)
-    }
+let resolveSwitchFunction (Function(name, parameters, body)) =
+    match body with
+    | None -> Ok (Function (name, parameters, None))
+    | Some block -> result {
+        let! resolvedBody, _ = resolveSwitchBlock block (None, false, Set.empty, List.empty)
+        return Function (name, parameters, Some resolvedBody)
+        }
+
+let resolveSwitchProgram (Program functions) =
+    functions
+    |> Seq.map resolveSwitchFunction
+    |> Seq.sequenceResultM
+    |> Result.map Array.toList
+    |> Result.map Program
 
 // --------------------------------------- Loop Labeling -----------------------------------------------------------
 
@@ -515,19 +556,27 @@ and resolveLoopBlock block currentLabel =
    |> Seq.sequenceResultM
    |> Result.map Array.toList
 
-let resolveLoopFunction (Function(name, body)) = result {
-    let! resolvedBody = resolveLoopBlock body None
-    return Function (name, resolvedBody)
-    }
+let resolveLoopFunction (Function(name, parameters, body)) =
+    match body with
+    | None -> Ok (Function (name, parameters, None))
+    | Some block -> result {
+        let! resolvedBody = resolveLoopBlock block None
+        return Function (name, parameters, Some resolvedBody)
+        }
+
+let resolveLoopProgram (Program functions) =
+    functions
+    |> Seq.map resolveLoopFunction
+    |> Seq.sequenceResultM
+    |> Result.map Array.toList
+    |> Result.map Program
 
 // ------------------------------- Complete Semantic Analysis ------------------------------------------------------
 
-let semanticAnalysis (Program func) =
-    let newMap = Map.empty
-    func
-    |> resolveFunction newMap
-    |> Result.bind resolveGotoFunction
-    |> Result.bind resolveSwitchFunction
-    |> Result.bind resolveLoopFunction
-    |> Result.map Program
+let semanticAnalysis program=
+    program
+    |> resolveProgram 
+    |> Result.bind resolveGotoProgram
+    |> Result.bind resolveSwitchProgram
+    |> Result.bind resolveLoopProgram
     

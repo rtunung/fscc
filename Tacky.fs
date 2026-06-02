@@ -162,6 +162,7 @@ let rec emitInstruction expression=
             condInstructions @ [makeJumpZero condVal falseLabel] @ middleInstructions @ [makeCopy v1 result; Jump endLabel; Label falseLabel]
             @ rightInstructions @ [makeCopy v2 result; Label endLabel]
         result, instructions
+    | FunctionCall(s, args) -> failwith "todo" // TODO
 
 let rec fromStatement statement =
     match statement with
@@ -210,7 +211,7 @@ let rec fromStatement statement =
     | For(init, condition, post, body, label) ->
         let initInstructions =
             match init with
-            | InitDeclaration declaration -> fromDeclaration declaration
+            | InitDeclaration declaration -> fromVariableDeclaration declaration
             | InitExpression None -> []
             | InitExpression (Some expr) -> expr |> emitInstruction |> snd
         let bodyInstruction = fromStatement body
@@ -264,8 +265,8 @@ let rec fromStatement statement =
     | DummyFor _ -> failwith "Semantic analysis stage must be performed before TACKY generation"
 
 
-and fromDeclaration (ident, exprO) =
-    match exprO with
+and fromVariableDeclaration (Variable (ident, initValue)) =
+    match initValue with
     | None -> []
     | Some expr ->
         let dst, instructions = emitInstruction expr
@@ -273,15 +274,23 @@ and fromDeclaration (ident, exprO) =
 
 and fromBlockItem blockItem =
     match blockItem with
-    | Declaration declaration -> fromDeclaration declaration
+    | Declaration (VariableDecl variable) -> fromVariableDeclaration variable
+    | Declaration (FunctionDecl func) -> failwith "TODO" // TODO
     | Statement statement -> fromStatement statement
 
 and fromBlock block = List.collect fromBlockItem block
 
-let fromFunction (C.Function (ident, body))=
-    let instructions = fromBlock body @ [Return (Constant 0)]
-    Function {| name = ident; instructions = instructions |}
+// TODO
+let fromFunction (C.Function (name, parameters, body))=
+    match body with
+    | None -> Function {| name = name; instructions = [] |}
+    | Some block ->
+        let instructions = fromBlock block @ [Return (Constant 0)]
+        Function {|name = name; instructions = instructions|}
     
-let fromProgram program =
-    match program with
-    | C.Program func -> Program <| fromFunction func
+let fromProgram (C.Program functions) =
+    // TODO
+    functions
+    |> List.map fromFunction
+    |> List.head
+    |> Program
