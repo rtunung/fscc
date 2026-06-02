@@ -114,6 +114,10 @@ and FunctionDeclaration =
 
 type Program = Program of FunctionDeclaration list
 
+type Type =
+    | Int
+    | FunType of paramCount: int
+
 type ParserError =
     | Message of string
     | LexError of LexerError

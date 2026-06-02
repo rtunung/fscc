@@ -162,7 +162,7 @@ let rec emitInstruction expression=
             condInstructions @ [makeJumpZero condVal falseLabel] @ middleInstructions @ [makeCopy v1 result; Jump endLabel; Label falseLabel]
             @ rightInstructions @ [makeCopy v2 result; Label endLabel]
         result, instructions
-    | FunctionCall(s, args) -> failwith "todo" // TODO
+    | FunctionCall(name, arguments) -> failwith "todo" // TODO
 
 let rec fromStatement statement =
     match statement with

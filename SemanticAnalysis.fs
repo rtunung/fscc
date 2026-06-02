@@ -63,6 +63,7 @@ let rec resolveExpression expr (identifierMap:Map<Identifier, Identifier>) =
         }
     | FunctionCall(name, args) ->
         if Map.containsKey name identifierMap then
+            let name = Map.find name identifierMap
             let resolvedArgsResult =
                 args
                 |> Seq.map (fun x -> resolveExpression x identifierMap)
@@ -262,6 +263,188 @@ let resolveProgram (Program functions) =
     
     resolveFunctions (Map.empty, Set.empty, Set.empty) functions []
     |> Result.map Program
+
+// ------------------------------------------------- Type Checking ---------------------------------------------------
+
+let rec typeCheckExpression symbolsMap expr =
+    let typeCheckExpressionList arg =
+            arg
+            |> Seq.map (typeCheckExpression symbolsMap)
+            |> Seq.sequenceResultM
+            |> Result.map (Seq.iter (fun _ -> ()))
+    
+    match expr with
+    | Var varName ->
+        let varType = Map.find varName symbolsMap
+        match varType with
+        | Int -> Ok ()
+        | _ -> Error <| Message $"Function '{varName}' used as variable"
+    | FunctionCall (funcName, arguments) ->
+        let funcType = Map.find funcName symbolsMap
+        match funcType with
+        | Int -> Error <| Message $"Variable '{funcName}' used as function"
+        | FunType x when x = List.length arguments -> typeCheckExpressionList arguments
+        | FunType _ -> Error <| Message $"Function '{funcName}' called with incorrect number of arguments"
+    | Assignment(lvalue, rvalue) -> typeCheckExpressionList [lvalue; rvalue]
+    | Unary(_, expression) -> typeCheckExpression symbolsMap expression
+    | Binary(_, left, right) -> typeCheckExpressionList [left; right]
+    | Conditional(condition, middle, right) -> typeCheckExpressionList [condition; middle; right]
+    | Constant _ -> Ok ()
+
+let typeCheckOptionalExpression symbolsMap optExpr =
+    match optExpr with
+    | None -> Ok ()
+    | Some expr -> typeCheckExpression symbolsMap expr
+
+let rec typeCheckVariableDeclaration symbolsMap (Variable (name, init)) =
+    let symbolsMap = Map.add name Int symbolsMap
+    match init with
+    | None -> Ok symbolsMap
+    | Some expr -> result {
+        let! () = typeCheckExpression symbolsMap expr
+        return symbolsMap
+        }
+
+and typeCheckFunctionDeclaration (symbolsMap, funcDefinedSet) (Function (name, parameters, body)) =
+    let funcType = FunType <| List.length parameters
+    
+    let validateDeclaration =
+        if Map.containsKey name symbolsMap then
+            let oldType = Map.find name symbolsMap
+            if oldType <> funcType then
+                Error <| Message $"Incompatible function declaration for function '{name}'\nOld type: {oldType}\nnewType: {funcType}"
+            else
+            let alreadyDefined = Set.contains name funcDefinedSet
+            if alreadyDefined && Option.isSome body then
+                Error <| Message $"Multiple definitions for function '{name}'"
+            else Ok ()
+        else Ok ()
+        
+    result {
+        let! () = validateDeclaration
+        
+        let symbolsMap = Map.add name funcType symbolsMap
+        
+        let registerParameter state parameter =
+            Map.add parameter Int state
+        let symbolsMap = List.fold registerParameter symbolsMap parameters
+        let funcDefinedSet =
+            match body with
+            | None -> funcDefinedSet
+            | Some _ -> Set.add name funcDefinedSet
+            
+        match body with
+        | None -> return symbolsMap, funcDefinedSet
+        | Some block ->
+            let! state = typeCheckBlock (symbolsMap, funcDefinedSet) block
+            return state
+    }
+
+and typeCheckForInit (symbolsMap, funcDefinedSet as state) init =
+    match init with
+    | InitExpression None -> Ok state
+    | InitExpression (Some expr) -> result {
+        let! () = typeCheckExpression symbolsMap expr
+        return state
+        }
+    | InitDeclaration varDecl -> result {
+        let! symbolsMap = typeCheckVariableDeclaration symbolsMap varDecl
+        return symbolsMap, funcDefinedSet
+        }
+
+and typeCheckStatement (symbolsMap, _ as state) statement =
+    match statement with
+    | Return expr -> result {
+        let! () = typeCheckExpression symbolsMap expr
+        return state
+        }
+    | Expression expression -> result {
+        let! () = typeCheckExpression symbolsMap expression
+        return state
+        }
+    | If(condition, body, elseBody) -> result {
+        let! () = typeCheckExpression symbolsMap condition
+        let! state = typeCheckStatement state body
+        match elseBody with
+        | None -> return state
+        | Some elseStatement ->
+            let! state = typeCheckStatement state elseStatement
+            return state
+        }
+    | Label(_, statement) -> typeCheckStatement state statement
+    | Compound block -> typeCheckBlock state block
+    | DummyWhile(condition, body) -> result {
+        let! () = typeCheckExpression symbolsMap condition
+        return! typeCheckStatement state body
+        }
+    | DummyDoWhile(body, condition) -> result {
+        let! () = typeCheckExpression symbolsMap condition
+        return! typeCheckStatement state body
+        }
+    | DummyFor(forInit, condition, post, body) -> result {
+        let! symbolsMap, _ as state = typeCheckForInit state forInit
+        let! () = typeCheckOptionalExpression symbolsMap condition
+        let! () = typeCheckOptionalExpression symbolsMap post
+        return! typeCheckStatement state body
+        }
+    | DummySwitch(argument, body) -> result {
+        let! () = typeCheckExpression symbolsMap argument
+        return! typeCheckStatement state body
+        }
+    | DummyCase(case, body) -> result {
+        let! () = typeCheckExpression symbolsMap case
+        return! typeCheckStatement state body
+        }
+    | DummyDefault body -> typeCheckStatement state body
+    
+    | Goto _
+    | DummyBreak
+    | DummyContinue
+    | Null -> Ok state
+    
+    | LoopBreak _
+    | Continue _
+    | While _
+    | DoWhile _
+    | For _ -> failwith "Loop labeling has to be performed after type checking"
+    
+    | Switch _
+    | Case _
+    | Default _
+    | SwitchBreak _ -> failwith "Switch labeling has to be performed after type checking"
+
+and typeCheckBlockItem (symbolsMap, funcDefinedSet as state) item =
+    match item with
+    | Declaration (VariableDecl var) -> result {
+        let! symbolsMap = typeCheckVariableDeclaration symbolsMap var
+        return symbolsMap, funcDefinedSet
+        }
+    | Declaration (FunctionDecl func) -> typeCheckFunctionDeclaration state func
+    | Statement statement -> typeCheckStatement state statement
+    
+and typeCheckBlock state block =
+    let rec loop state items =
+        match items with
+        | [] -> Ok state
+        | item :: rest ->
+            let checkedItem = typeCheckBlockItem state item
+            match checkedItem with
+            | Error error -> Error error
+            | Ok state -> loop state rest
+    
+    loop state block
+    
+let typeCheckProgram (Program functions) =
+    let rec loop state functions =
+        match functions with
+        | [] -> Ok state
+        | func :: rest ->
+            let checkedFunction = typeCheckFunctionDeclaration state func
+            match checkedFunction with
+            | Error error -> Error error
+            | Ok state -> loop state rest
+            
+    loop (Map.empty, Set.empty) functions
 
 // ---------------------------------------------- Resolve Goto Labels ------------------------------------------------
 
@@ -622,8 +805,11 @@ let resolveLoopProgram (Program functions) =
 // ------------------------------- Complete Semantic Analysis ------------------------------------------------------
 
 let semanticAnalysis program=
-    program
-    |> resolveProgram 
+    result {
+        let! program = resolveProgram program
+        let! state = typeCheckProgram program
+        return program 
+        }
     |> Result.bind resolveGotoProgram
     |> Result.bind resolveSwitchProgram
     |> Result.bind resolveLoopProgram
