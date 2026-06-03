@@ -41,12 +41,13 @@ type Instruction =
     | JumpIfZero of {| condition : Value; target : Identifier|}
     | JumpIfNotZero of {| condition : Value; target : Identifier|}
     | Label of Identifier
+    | FunctionCall of name: Identifier * args: Value list * dst: Value
     
 type FunctionDefinition =
-    Function of {| name : Identifier; instructions: Instruction list |}
+    Function of name : Identifier * parameters: Identifier list * instructions: Instruction list
     
 type Program =
-    Program of FunctionDefinition
+    Program of FunctionDefinition list
     
 let makeJumpZero src label =
     JumpIfZero {| condition = src; target = label |}
@@ -162,7 +163,16 @@ let rec emitInstruction expression=
             condInstructions @ [makeJumpZero condVal falseLabel] @ middleInstructions @ [makeCopy v1 result; Jump endLabel; Label falseLabel]
             @ rightInstructions @ [makeCopy v2 result; Label endLabel]
         result, instructions
-    | FunctionCall(name, arguments) -> failwith "todo" // TODO
+    | C.FunctionCall(name, arguments) ->
+        let argValues, argInstructions =
+            arguments
+            |> List.map emitInstruction
+            |> List.unzip
+            |> fun (x, y) -> x, List.concat y
+        
+        let dst = Var <| getTemporaryName ()    
+        let instructions = argInstructions @ [FunctionCall (name, argValues, dst)]
+        dst, instructions
 
 let rec fromStatement statement =
     match statement with
@@ -275,22 +285,22 @@ and fromVariableDeclaration (Variable (ident, initValue)) =
 and fromBlockItem blockItem =
     match blockItem with
     | Declaration (VariableDecl variable) -> fromVariableDeclaration variable
-    | Declaration (FunctionDecl func) -> failwith "TODO" // TODO
+    | Declaration (FunctionDecl (C.Function (_, _, None))) -> []
+    | Declaration (FunctionDecl (C.Function (_, _, Some _))) ->
+        failwith "Function definition inside a block is not allowed! This should have been caught in the type checking pass!"
     | Statement statement -> fromStatement statement
 
 and fromBlock block = List.collect fromBlockItem block
 
-// TODO
 let fromFunction (C.Function (name, parameters, body))=
     match body with
-    | None -> Function {| name = name; instructions = [] |}
+    | None -> None
     | Some block ->
         let instructions = fromBlock block @ [Return (Constant 0)]
-        Function {|name = name; instructions = instructions|}
+        Some <| Function (name, parameters, instructions)
     
 let fromProgram (C.Program functions) =
-    // TODO
     functions
     |> List.map fromFunction
-    |> List.head
+    |> List.choose id
     |> Program

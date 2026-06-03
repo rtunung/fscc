@@ -72,7 +72,7 @@ if onlyTacky then
 let assemblyResult =
     tackyResult
     |> Result.map Assembly.fromProgram
-    |> Result.map Assembly.updateAllInstructions
+    |> Result.map Assembly.updateProgram
 
 if onlyCodeGen then
     printResult assemblyResult
@@ -102,16 +102,20 @@ let assemblyString = Result.defaultValue "" assembly
     
 let outputFile =
     let extensionBegin = inputFile[0].LastIndexOf '.'
-    inputFile[0].Substring(0, extensionBegin)
+    let root = inputFile[0].Substring(0, extensionBegin)
+    if compileObjectFile then
+        root + ".o"
+    else
+        root
     
 let outputAssembly = outputFile + ".s"
 
 File.WriteAllText (outputAssembly, assemblyString)
 let proc =
         if compileObjectFile then
-            Process.Start ("gcc", $"-c {outputAssembly} -o {outputFile}")
+            Process.Start ("gcc", $"-c {outputAssembly} -g -o {outputFile}")
         else
-            Process.Start ("gcc", $"{outputAssembly} -o {outputFile}")
+            Process.Start ("gcc", $"{outputAssembly} -g -o {outputFile}")
         
 proc.WaitForExit ()
 let gccExitCode = proc.ExitCode

@@ -1,5 +1,7 @@
 module fscc.Assembly
 
+open System.Linq
+open System.Runtime.InteropServices.ComTypes
 open fscc.Tacky
 
 type Identifier = string
@@ -8,6 +10,10 @@ type Reg =
     | AX
     | CX
     | DX
+    | DI
+    | SI
+    | R8
+    | R9
     | R10
     | R11
     
@@ -52,11 +58,14 @@ type Instruction =
     | JmpCC of ConditionalCode * Identifier
     | SetCC of ConditionalCode * Operand
     | Label of Identifier
+    | DeallocateStack of int
+    | Push of Operand
+    | Call of Identifier
 
 type FunctionDefinition =
-    Function of {|name : Identifier; instructions : Instruction list|}
+    Function of {|name : Identifier; instructions : Instruction list; |}
 
-type Program = Program of FunctionDefinition
+type Program = Program of FunctionDefinition list
 
 // Helper functions
 
@@ -79,6 +88,8 @@ let getCCFromOperator op =
     | Equal -> E
     | NotEqual -> NE
     | _ -> failwith "Cannot get Conditional Code from non-relational operator"
+
+let functionCallRegisters = [DI; SI; DX; CX; R8; R9]
 
 let makeMov src dst =
     Mov {| src = src; dst = dst |}
@@ -154,17 +165,93 @@ let fromInstructions instruction =
     | JumpIfNotZero jump ->
         [Cmp (Imm 0, fromValue jump.condition); JmpCC (NE, jump.target)]
     | Tacky.Label name-> [Label name]
+    | FunctionCall(name, arguments, dst) ->
+        
+        let registerArgs, stackArgs =
+            if (List.length arguments) >= 6
+            then List.splitAt 6 arguments
+            else arguments, []
+            
+        let stackArgsLength = List.length stackArgs
+        let stackPadding =
+            if stackArgsLength % 2 = 0
+            then 0
+            else 8
+        
+        let stackPaddingInstruction =
+            if stackPadding <> 0 then [AllocateStack stackPadding]
+            else []
+            
+        let movRegisterArgs =
+            registerArgs
+            |> List.zip (List.truncate (List.length registerArgs) functionCallRegisters)
+            |> List.map (fun (reg, value) -> makeMov (fromValue value) (Reg reg))
+        
+        let makeMovStackArgs arg =
+            let assemblyArg = fromValue arg
+            match assemblyArg with
+            | Reg _
+            | Imm _ -> [Push assemblyArg]
+            | Pseudo _
+            | Stack _ -> [makeMov assemblyArg (Reg AX); Push (Reg AX)]
 
-let fromFunction (Tacky.Function func) =
-    let body = List.collect fromInstructions func.instructions
-    Function {| name = func.name; instructions = body |}
+        let movStackArgs =
+            stackArgs
+            |> List.rev
+            |> List.collect makeMovStackArgs
+            
+        let funcCall = [Call name]
+        
+        let bytesToRemove = 8 * stackArgsLength + stackPadding
+        let deallocateStackInstruction =
+            if bytesToRemove <> 0
+            then [DeallocateStack bytesToRemove]
+            else []
+            
+        let retrieveFromAx = [makeMov (Reg AX) (fromValue dst)]
+        
+        List.concat [stackPaddingInstruction; movRegisterArgs; movStackArgs
+                     funcCall; deallocateStackInstruction; retrieveFromAx]
+        
+        
+
+let passFunctionParameters parameters =
+    let rec passWithState (availableRegisters, stackArgs) acc parameters =
+        match parameters with
+        | [] -> acc
+        | para :: rest ->
+            match availableRegisters with
+            | reg :: restReg ->
+                let instructions = acc @ [makeMov (Reg reg) (Pseudo para)]
+                passWithState (restReg, stackArgs) instructions rest
+            | [] ->
+                let instructions = acc @ [makeMov (Stack stackArgs) (Pseudo para)]
+                let stackArgs = stackArgs + 8
+                passWithState ([], stackArgs) instructions rest
+                
+    passWithState (functionCallRegisters, 16) [] parameters
+
+let fromFunction (Tacky.Function (name, parameters, instructions)) =
+    let copyParameters = passFunctionParameters parameters
+    let bodyInstructions = List.collect fromInstructions instructions
+    Function {| name = name; instructions = copyParameters @ bodyInstructions |}
     
 let fromProgram program =
     match program with
-    | Tacky.Program func -> Program <| fromFunction func
+    | Tacky.Program func ->
+        func
+        |> List.map fromFunction
+        |> Program
     
     
-// Second compiler pass: converting pseudo addresses to stack addresses
+// ---------------------------------- Second Assembly pass -----------------------------------------
+
+// ------------------------------- Converting pseudo registers  ------------------------------------
+
+(*
+    This stage updated the Pseudo Registers to usable Stack Addresses.
+    The stack size per function is also calculated in this step
+*)
 
 let replacePseudoOperand state operand =
     let map, counter = state
@@ -181,7 +268,7 @@ let replacePseudoOperand state operand =
             stackOperand, (updatedMap, updatedCounter)
     | nonPseudo -> nonPseudo, (map, counter)
 
-let updatePseudo state currentInstr =
+let updatePseudoInstruction state currentInstr =
     match currentInstr with
     | Unary(unaryOperator, operand) ->
         let updatedOperand, state = replacePseudoOperand state operand
@@ -205,14 +292,29 @@ let updatePseudo state currentInstr =
     | SetCC(cc, operand) ->
         let updatedOperand, state = replacePseudoOperand state operand
         SetCC (cc, updatedOperand), state
+    | Push operand ->
+        let updatedOperand, state = replacePseudoOperand state operand
+        Push updatedOperand, state
         
     | Jmp _
     | JmpCC _
     | Label _
     | Ret
+    | Call _
+    | DeallocateStack _
     | AllocateStack _ -> currentInstr, state
 
-let updateInvalidInstructions currentInstr =
+let updatePseudoInstructions instructions =
+    let updatedInstructions, (_, stackSize) =
+        instructions
+        |> List.mapFold updatePseudoInstruction (Map.empty, 0)
+    
+    updatedInstructions, -stackSize
+        
+
+// ------------------------------------ Update Invalid Instructions ------------------------------------
+
+let updateInvalidInstruction currentInstr =
     match currentInstr with
     | Mov mov ->
         match mov.src, mov.dst with
@@ -257,41 +359,67 @@ let updateInvalidInstructions currentInstr =
     | Unary _
     | Cdq
     | AllocateStack _
+    | DeallocateStack _
+    | Push _
+    | Call _
+
     | Ret -> [currentInstr]
 
+// ------------------------------------------ The actual second Assembly pass -----------------------------------------
 
-let updateRegisters instructions =
+let updateFunction (Function func) =
+    let instructions, stackSize = updatePseudoInstructions func.instructions
     
-    // First replace all Pseudo Registers with stack addresses
-    let updatedInstructions, (_, stackSize) =
+    let neededToBeMultipleOf16 = (16 - (stackSize % 16)) % 16
+    let roundedStackSize = stackSize + neededToBeMultipleOf16
+    let updatedInstructions =
         instructions
-        |> List.mapFold updatePseudo (Map.empty, 0)
+        |> List.collect updateInvalidInstruction
+        |> (@) [AllocateStack roundedStackSize]
         
-    // Instructions that have two stack operands are invalid and need to be replaced with valid instructions
-    updatedInstructions
-    |> List.collect updateInvalidInstructions
-    |> (@) [AllocateStack stackSize]
+    Function {| func with instructions = updatedInstructions |}
 
-let updateAllInstructions program =
-    let (Program (Function func)) = program
-    Program <| Function {| func with instructions = updateRegisters func.instructions |}
+let updateProgram (Program functions) =
+    functions
+    |> List.map updateFunction
+    |> Program
     
 
-// Emitting assembly code from Assembly AST
+// ------------------------------------- Emitting Assembly -----------------------------------
 
 let getRegisterAssembly reg =
     match reg with
     | AX -> "%eax"
-    | R10 -> "%r10d"
-    | DX -> "%edx"
-    | R11 -> "%r11d"
     | CX -> "%ecx"
+    | DX -> "%edx"
+    | SI -> "%esi"
+    | DI -> "%edi"
+    | R8 -> "%r8d"
+    | R9 -> "%r9d"
+    | R10 -> "%r10d"
+    | R11 -> "%r11d"
+
+let getRegisterAssembly8Byte reg =
+    match reg with
+    | AX -> "%rax"
+    | CX -> "%rcx"
+    | DX -> "%rdx"
+    | SI -> "%rsi"
+    | DI -> "%rdi"
+    | R8 -> "%r8"
+    | R9 -> "%r9"
+    | R10 -> "%r10"
+    | R11 -> "%r11"
 
 let getRegisterAssembly1Byte reg =
     match reg with
     | AX -> "%al"
-    | DX -> "%dl"
     | CX -> "%cl"
+    | DX -> "%dl"
+    | SI -> "%sil"
+    | DI -> "%dil"
+    | R8 -> "%8b"
+    | R9 -> "%9b"
     | R10 -> "%r10b"
     | R11 -> "%r11b"
 
@@ -306,6 +434,11 @@ let getOperandAssembly operand =
     | Reg reg -> getRegisterAssembly reg
     | Stack offset -> $"{offset}({rbp})"
     | Pseudo name -> failwith $"Found pseudo register {name} during assembly generation. This is a compiler bug!"
+
+let getOperandAssembly8Byte operand =
+    match operand with
+    | Reg reg -> getRegisterAssembly8Byte reg
+    | _ -> getOperandAssembly operand
 
 let unaryOperatorAssembly op =
     match op with
@@ -347,11 +480,14 @@ let emitInstruction assembly instruction =
             let operand = getOperandAssembly operand
             $"\t{instruction} {operand}\n"
         | AllocateStack offset -> $"\tsubq ${offset}, {rsp}\n"
+        | DeallocateStack offset -> $"\taddq ${offset}, {rsp}\n"
         | Binary(shift, Reg CX, right) when shift = ShiftLeft || shift = ShiftRight ->
             let instruction = binaryOperatorAssembly shift
             let left = getRegisterAssembly1Byte CX
             let right = getOperandAssembly right
             $"\t{instruction} {left}, {right}\n"
+        //| Binary(shift, _, _) when shift = ShiftLeft || shift = ShiftRight ->
+        //    failwith "Shift instruction with non-CX Register as source. This should not happen"
         | Binary(operator, left, right) ->
             let instruction = binaryOperatorAssembly operator
             let left = getOperandAssembly left
@@ -379,16 +515,22 @@ let emitInstruction assembly instruction =
             let suffix = getCCSuffix cc
             let operand = getOperandAssembly operand
             $"\tset{suffix} {operand}\n"
-
+        | Push operand ->
+            let operand = getOperandAssembly8Byte operand
+            $"\tpushq {operand}\n"
+        | Call label -> $"\tcall {label}\n"
+    
     assembly + nextAssembly
 
-let emitFunction assembly (Function func) =
+let emitFunction (Function func) =
     let name = func.name
-    let newAssembly = assembly + $"\t.globl {name}\n{name}:\n" + functionPrologue
+    let newAssembly = $"\t.globl {name}\n{name}:\n" + functionPrologue
     func.instructions
     |> List.fold emitInstruction newAssembly
+    |> fun str -> str + "\n"
 
-let emitProgram program =
-    match program with
-    | Program f -> emitFunction "" f
-    |> fun str -> str + ".section .note.GNU-stack,\"\",@progbits\n"
+let emitProgram (Program functions) =
+    functions
+    |> List.map emitFunction
+    |> fun x -> x @ [".section .note.GNU-stack,\"\",@progbits\n"]
+    |> String.concat ""

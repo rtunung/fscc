@@ -44,9 +44,3 @@ let getSwitchLabel () =
     switchLabelCounter <- switchLabelCounter + 1
     label
     
-// --------------------- Helper Functions ----------------------
-
-let optionalListLength optList =
-    match optList with
-    | None -> 0
-    | Some l -> List.length l
