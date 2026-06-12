@@ -57,12 +57,16 @@ type Expression =
     | Conditional of condition: Expression * Expression * Expression
     | FunctionCall of Identifier * args: Expression list
 
+type StorageClass =
+    | Static
+    | Extern
+
 type Declaration =
     | VariableDecl of VariableDeclaration
     | FunctionDecl of FunctionDeclaration
     
 and VariableDeclaration =
-    Variable of Identifier * Expression option
+    Variable of Identifier * Expression option * StorageClass option
 
 and Statement =
     | Return of Expression
@@ -110,9 +114,9 @@ and BlockItem =
 and Block = BlockItem list
 
 and FunctionDeclaration =
-    Function of Identifier * parameters: Identifier list * body: Block option
+    Function of Identifier * parameters: Identifier list * body: Block option * StorageClass option
 
-type Program = Program of FunctionDeclaration list
+type Program = Program of Declaration list
 
 type Type =
     | Int
@@ -204,6 +208,47 @@ let parseBinaryOperator tokens =
 
     | other :: _ -> Error <| Message $"Expected binary operation, got {other}"
     | [] -> Error <| suddenEOF
+
+let parseSpecifiers tokens =
+    let parseSpecifier tokens =
+        match tokens with
+        | (IntKey as tok) :: rest
+        | (StaticKey as tok) :: rest
+        | (ExternKey as tok) :: rest -> Ok (tok, rest)
+        | other :: _ -> Error <| Message $"Expected specifier token, got {other}"
+        | [] -> Error suddenEOF
+    
+    let rec loop acc tokens =
+        let result = parseSpecifier tokens
+        match result with
+        | Error err ->
+            if List.isEmpty acc then Error err else Ok (acc, tokens)
+        | Ok (specifier, rest) -> loop (acc @ [specifier]) rest
+        
+    loop [] tokens
+
+let getStorageClassToken token =
+    match token with
+    | ExternKey -> Extern
+    | StaticKey -> Static
+    | _ -> failwith "Token is not a storage class specifier! This should not happen, internal compiler error!"
+
+let parseTypeAndStorageClass specifierList =
+    let isTypeSpecifier speci = speci = IntKey
+    let types, storageClasses = List.partition isTypeSpecifier specifierList
+    
+    let thisType = if List.length types = 1
+                   then Ok <| List.head types
+                   else Error <| Message "More than one type was specified!"
+    
+    let thisStorageClass = if List.length storageClasses = 1
+                           then Some (getStorageClassToken (List.head storageClasses))
+                           else None
+    
+    result {
+        let! myType = thisType
+        return (myType, thisStorageClass)
+    }
 
 let isCompoundAssignment token =
     let allCompoundAssignments = [PlusEqual; MinusEqual; StarEqual; SlashEqual; PercentageEqual; AmpersandEqual; PipeEqual
@@ -431,13 +476,11 @@ let rec parseStatement tokens =
 and parseBlockItem tokens =
     match tokens with
     // Declarations
-    | IntKey :: Lexer.Identifier _ :: ParenOpen :: _ -> result {
-        let! func, rest = parseFunction tokens
-        return Declaration (FunctionDecl func), rest
-        }
-    | IntKey :: Lexer.Identifier _ :: _ -> result {
-        let! declaration, rest = parseVariableDeclaration tokens
-        return Declaration (VariableDecl declaration), rest
+    | IntKey :: _
+    | StaticKey :: _
+    | ExternKey :: _ -> result {
+        let! declaration, rest = parseDeclaration tokens
+        return Declaration declaration, rest
         }
     // Statements
     | _ :: _ ->
@@ -461,26 +504,14 @@ and parseBlock tokens =
             let! result, rest = loop rest []
             return (result:Block), rest
         }
-and parseVariableDeclaration tokens =
-    match tokens with
-    // Declarations
-    | IntKey :: Identifier ident :: Lexer.Equal :: rest -> result {
-        let! expr, rest = parseExpression rest
-        let! rest = expectToken Semicolon rest
-        return Variable (ident, Some expr), rest
-        }
-    | IntKey :: Identifier ident :: rest -> result {
-        let! rest = expectToken Semicolon rest
-        return Variable (ident, None), rest
-        }
-    | unexpectedToken :: _ -> Error <| Message $"Expected Declaration, got {unexpectedToken}"
-    | [] -> Error suddenEOF
         
 and parseForInit tokens =
     match tokens with
     | IntKey :: _ -> result {
-        let! declaration, rest = parseVariableDeclaration tokens
-        return InitDeclaration declaration, rest
+        let! declaration, rest = parseDeclaration tokens
+        match declaration with
+        | VariableDecl varDecl -> return InitDeclaration varDecl, rest
+        | FunctionDecl _ -> return! Error <| Message "Function declaration instead of variable declaration inside for-header"
         }
     | Semicolon :: rest -> Ok (InitExpression None, rest)
     | _ :: _ -> result {
@@ -506,7 +537,7 @@ and parseParameterList tokens =
     | unexpected :: _ -> Error <| Message $"Unexpected token {unexpected} in parameter list declaration"
     | [] -> Error suddenEOF
 
-and parseFunction tokens =
+and parseDeclaration tokens =
     let parseOptionalBody tokens =
         match tokens with
         | Semicolon :: rest -> Ok (None, rest)
@@ -514,30 +545,40 @@ and parseFunction tokens =
             let! block, rest = parseBlock tokens
             return Some block, rest
             }
-        
+    
     result {
-        let! rest = expectToken IntKey tokens
+        let! specifiers, rest = parseSpecifiers tokens
+        let! thisType(*Currently only int so unused*), storageClass = parseTypeAndStorageClass specifiers
         let! name, rest = parseIdentifier rest
-        let! rest = expectToken ParenOpen rest
-        let! parameters, rest = parseParameterList rest
-        let! rest = expectToken ParenClose rest
-        let! body, rest = parseOptionalBody rest
-        return Function (name, parameters, body), rest
+        
+        match rest with
+        | Lexer.Equal :: rest ->
+            let! expression, rest = parseExpression rest
+            let! rest = expectToken Semicolon rest
+            return VariableDecl <| Variable (name, Some expression, storageClass), rest
+        | Semicolon :: rest -> return VariableDecl <| Variable (name, None, storageClass), rest
+        | ParenOpen :: rest ->
+            let! parameters, rest = parseParameterList rest
+            let! rest = expectToken ParenClose rest
+            let! body, rest = parseOptionalBody rest
+            return FunctionDecl <| Function (name, parameters, body, storageClass), rest
+        | other :: _ -> return! Error <| Message $"Unexpected token {other} found in Declaration"
+        | [] -> return! Error suddenEOF
     }
 
 let parseProgram tokens : Result<Program, ParserError> =
     
-    let rec parseListOfFunctions tokens acc =
+    let rec parseDeclarations tokens acc =
         match tokens with
         | [] -> Ok acc
         | _ ->
-            let func = parseFunction tokens
-            match func with
+            let decl = parseDeclaration tokens
+            match decl with
             | Error error -> Error error
-            | Ok (func, rest) -> parseListOfFunctions rest (acc @ [func])
+            | Ok (func, rest) -> parseDeclarations rest (acc @ [func])
     
     result {
-        let! functions = parseListOfFunctions tokens []
+        let! functions = parseDeclarations tokens []
         return Program functions
     }
     

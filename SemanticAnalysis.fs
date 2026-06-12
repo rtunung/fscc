@@ -209,7 +209,7 @@ and resolveVariableDeclaration (Variable (ident, expr)) (identifierMap, scopeSet
         | Some (Error error) -> Error error
         | Some (Ok expr) -> Ok (Variable(uniqueName, Some expr), (identifierMap, blockSet, linkageSet))
     
-and resolveFunctionDeclaration (Function (name, parameters, body)) (identifierMap, scopeSet, linkageSet) =
+and resolveFunctionDeclaration (Function (name, parameters, body, storageClass)) (identifierMap, scopeSet, linkageSet) =
     let checkForDuplicate =
         if Map.containsKey name identifierMap then
             if Set.contains name scopeSet && not (Set.contains name linkageSet) then
@@ -248,7 +248,7 @@ and resolveFunctionDeclaration (Function (name, parameters, body)) (identifierMa
             |> Option.map (fun x -> resolveBlock x (newIdentifierMap, newScopeSet, linkageSet))
             |> Option.sequenceResult
         
-        return Function (name, resolvedParameters, resolvedBody), (identifierMap, scopeSet, linkageSet)
+        return Function (name, resolvedParameters, resolvedBody, storageClass), (identifierMap, scopeSet, linkageSet)
     }
     
 let resolveProgram (Program functions) =
@@ -555,23 +555,39 @@ and resolveGotoBlock items state =
     | Error error -> Error error
     | Ok block -> Ok (block, newState)
 
-let resolveGotoFunction (Function(name, parameters, body)) =
+let resolveGotoFunction (Function(name, parameters, body, storageClass)) =
     match body with
-    | None -> Ok (Function (name, parameters, None))
+    | None -> Ok (Function (name, parameters, None, storageClass))
     | Some block -> result {
         let emptyState = (Map.empty, Set.empty)
         let! resolvedBlock, _ = resolveGotoBlock block emptyState
-        return Function (name, parameters, Some resolvedBlock)
+        return Function (name, parameters, Some resolvedBlock, storageClass)
         }
+
+let resolveGotoTopDeclarations declaration =
+    match declaration with
+    | VariableDecl _ -> Ok declaration
+    | FunctionDecl func ->
+        resolveGotoFunction func
+        |> Result.map FunctionDecl
 
 let rec resolveGotoProgram (Program functions) =
     functions
-    |> Seq.map resolveGotoFunction
+    |> Seq.map resolveGotoTopDeclarations
     |> Seq.sequenceResultM
     |> Result.map Array.toList
     |> Result.map Program
 
 // ------------------------------------- Switch Labeling -----------------------------------------------------------
+
+(*
+    For codgen all switch statements including case statements and default statements need to be labeled.
+    The state, that needs to be tracked is:
+    - currentSwitch: Tracks the label of the current switch we are inside (if we are indeed inside a switch statement at all)
+    - inLoop: Tracks if switched inside a loop; break statements inside a loop belong to the loop and not the switch, so those get ignored in this step
+    - cases: We collect a set of case statements for the current switch in the form (label, expression)
+    - defaults: We collect a list of all default statements for the current switch and their labels 
+*)
 
 type SwitchResolutionState = SwitchState of currentSwitch: Identifier option * cases: (Identifier * Expression) list * defaults: Expression list
 
@@ -687,23 +703,34 @@ and resolveSwitchBlock block (currentSwitch, inLoop, cases, defaults) =
     
     loop (cases, defaults) block []
 
-let resolveSwitchFunction (Function(name, parameters, body)) =
+let resolveSwitchFunction (Function(name, parameters, body, StorageClass)) =
     match body with
-    | None -> Ok (Function (name, parameters, None))
+    | None -> Ok (Function (name, parameters, None, StorageClass))
     | Some block -> result {
         let! resolvedBody, _ = resolveSwitchBlock block (None, false, Set.empty, List.empty)
-        return Function (name, parameters, Some resolvedBody)
+        return Function (name, parameters, Some resolvedBody, StorageClass)
         }
+
+let resolveSwitchTopDeclarations declaration =
+    match declaration with
+    | VariableDecl _ -> Ok declaration
+    | FunctionDecl func ->
+        resolveSwitchFunction func
+        |> Result.map FunctionDecl
 
 let resolveSwitchProgram (Program functions) =
     functions
-    |> Seq.map resolveSwitchFunction
+    |> Seq.map resolveSwitchTopDeclarations
     |> Seq.sequenceResultM
     |> Result.map Array.toList
     |> Result.map Program
 
 // --------------------------------------- Loop Labeling -----------------------------------------------------------
 
+(*
+    All loops need to be given a label for codegen.
+    Here only the current label needs to be tracked as state
+*)
 let rec resolveLoopStatement statement currentLabel =
      match statement with
      | DummyBreak ->
@@ -787,17 +814,24 @@ and resolveLoopBlock block currentLabel =
    |> Seq.sequenceResultM
    |> Result.map Array.toList
 
-let resolveLoopFunction (Function(name, parameters, body)) =
+let resolveLoopFunction (Function(name, parameters, body, storageClass)) =
     match body with
-    | None -> Ok (Function (name, parameters, None))
+    | None -> Ok (Function (name, parameters, None, storageClass))
     | Some block -> result {
         let! resolvedBody = resolveLoopBlock block None
-        return Function (name, parameters, Some resolvedBody)
+        return Function (name, parameters, Some resolvedBody, storageClass)
         }
+
+let resolveLoopTopDeclaration declaration =
+    match declaration with
+    | VariableDecl _ -> Ok declaration
+    | FunctionDecl func ->
+        resolveLoopFunction func
+        |> Result.map FunctionDecl
 
 let resolveLoopProgram (Program functions) =
     functions
-    |> Seq.map resolveLoopFunction
+    |> Seq.map resolveLoopTopDeclaration
     |> Seq.sequenceResultM
     |> Result.map Array.toList
     |> Result.map Program

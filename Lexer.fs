@@ -25,6 +25,8 @@ type Token =
     | SwitchKey
     | CaseKey
     | DefaultKey
+    | StaticKey
+    | ExternKey
     
     | ParenOpen
     | ParenClose
@@ -151,6 +153,8 @@ let lexIdentifierKeyword lexer =
         | "switch" -> SwitchKey
         | "case" -> CaseKey
         | "default" -> DefaultKey
+        | "static" -> StaticKey
+        | "extern" -> ExternKey
         | value -> Identifier value
     token, nextLex
 
