@@ -209,12 +209,17 @@ let parseBinaryOperator tokens =
     | other :: _ -> Error <| Message $"Expected binary operation, got {other}"
     | [] -> Error <| suddenEOF
 
+let isSpecifier token =
+    match token with
+    | IntKey
+    | StaticKey
+    | ExternKey -> true
+    | _ -> false
+
 let parseSpecifiers tokens =
     let parseSpecifier tokens =
         match tokens with
-        | (IntKey as tok) :: rest
-        | (StaticKey as tok) :: rest
-        | (ExternKey as tok) :: rest -> Ok (tok, rest)
+        | specifier :: rest when isSpecifier specifier -> Ok (specifier, rest)
         | other :: _ -> Error <| Message $"Expected specifier token, got {other}"
         | [] -> Error suddenEOF
     
@@ -227,7 +232,7 @@ let parseSpecifiers tokens =
         
     loop [] tokens
 
-let getStorageClassToken token =
+let getStorageClass token =
     match token with
     | ExternKey -> Extern
     | StaticKey -> Static
@@ -241,13 +246,16 @@ let parseTypeAndStorageClass specifierList =
                    then Ok <| List.head types
                    else Error <| Message "More than one type was specified!"
     
-    let thisStorageClass = if List.length storageClasses = 1
-                           then Some (getStorageClassToken (List.head storageClasses))
-                           else None
-    
+    let thisStorageClass =
+        match storageClasses with
+        | [ oneClass ] -> oneClass |> getStorageClass |> Some |> Ok
+        | [] -> Ok (None)
+        | _ :: _ -> Error <| Message "Multiple storage class specifiers were used"
+        
     result {
         let! myType = thisType
-        return (myType, thisStorageClass)
+        let! myStorageClass = thisStorageClass
+        return (myType, myStorageClass)
     }
 
 let isCompoundAssignment token =
@@ -507,11 +515,12 @@ and parseBlock tokens =
         
 and parseForInit tokens =
     match tokens with
-    | IntKey :: _ -> result {
+    | specifier :: _ when isSpecifier specifier -> result {
         let! declaration, rest = parseDeclaration tokens
         match declaration with
-        | VariableDecl varDecl -> return InitDeclaration varDecl, rest
-        | FunctionDecl _ -> return! Error <| Message "Function declaration instead of variable declaration inside for-header"
+        | VariableDecl varDecl ->
+            return InitDeclaration varDecl, rest
+        | FunctionDecl _ -> return! Error <| Message "Function declaration instead of variable declaration inside for loop header"
         }
     | Semicolon :: rest -> Ok (InitExpression None, rest)
     | _ :: _ -> result {
