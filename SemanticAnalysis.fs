@@ -584,9 +584,9 @@ let typeCheckFileVariableDeclaration symbolTable declaration =
         let oldDecl = Map.find ident symbolTable
         result {
             do! if oldDecl.sType <> Int
-                then Error <| Message "Hello"
+                then Error <| Message "Function redeclared as variable"
                 else Ok ()
-                                
+
             let oldGlobl =
                 match oldDecl.attribute with
                 | FunAttr (_, globl) -> globl
@@ -604,7 +604,10 @@ let typeCheckFileVariableDeclaration symbolTable declaration =
                     match init with
                     | Some (Constant _) -> Error <| Message "Conflicting file scope variable definitions"
                     | _ -> Ok (Initial i)
-                | _ -> Ok Tentative
+                | _ ->
+                    match init with
+                    | Some (Constant i) -> Ok (Initial i)
+                    | _ -> Ok Tentative
         
             let attrs = StaticAttr (initialValue, newGlobl)
             return Map.add ident {oldDecl with attribute = attrs; sType = Int} symbolTable
