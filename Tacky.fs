@@ -1,6 +1,7 @@
 module fscc.Tacky
 
 open fscc.C
+open fscc.SemanticAnalysis
 open Misc
 
 type Identifier = string
@@ -43,11 +44,12 @@ type Instruction =
     | Label of Identifier
     | FunctionCall of name: Identifier * args: Value list * dst: Value
     
-type FunctionDefinition =
-    Function of name : Identifier * parameters: Identifier list * instructions: Instruction list
-    
+type TopLevel =
+    | Function of name: Identifier * globl: bool * parameters: Identifier list * instructions: Instruction list
+    | StaticVariable of name: Identifier * globl: bool * init: int
+
 type Program =
-    Program of FunctionDefinition list
+    Program of TopLevel list
     
 let makeJumpZero src label =
     JumpIfZero {| condition = src; target = label |}
@@ -260,7 +262,7 @@ let rec fromStatement statement =
         let defaultJump =
             match defaultCase with
             | None -> []
-            | Some label -> [Jump label]
+            | Some defaultLabel -> [Jump defaultLabel]
             
         argumentInstructions @ conditionalChecks @ defaultJump @ [Jump label] @
         bodyInstructions @ [Label label]
@@ -275,32 +277,55 @@ let rec fromStatement statement =
     | DummyFor _ -> failwith "Semantic analysis stage must be performed before TACKY generation"
 
 
-and fromVariableDeclaration (Variable (ident, initValue)) =
-    match initValue with
-    | None -> []
-    | Some expr ->
-        let dst, instructions = emitInstruction expr
-        instructions @ [makeCopy dst (Var ident)]
+and fromVariableDeclaration (Variable (ident, initValue, storageClass)) =
+    if storageClass = None then
+        match initValue with
+        | None -> []
+        | Some expr ->
+            let dst, instructions = emitInstruction expr
+            instructions @ [makeCopy dst (Var ident)]
+    else []
 
 and fromBlockItem blockItem =
     match blockItem with
     | Declaration (VariableDecl variable) -> fromVariableDeclaration variable
-    | Declaration (FunctionDecl (C.Function (_, _, None))) -> []
-    | Declaration (FunctionDecl (C.Function (_, _, Some _))) ->
+    | Declaration (FunctionDecl (C.Function (_, _, None, _))) -> []
+    | Declaration (FunctionDecl (C.Function (_, _, Some _, _))) ->
         failwith "Function definition inside a block is not allowed! This should have been caught in the type checking pass!"
     | Statement statement -> fromStatement statement
 
 and fromBlock block = List.collect fromBlockItem block
 
-let fromFunction (C.Function (name, parameters, body))=
+let fromFunction (C.Function (name, parameters, body, storageClass))=
     match body with
     | None -> None
     | Some block ->
         let instructions = fromBlock block @ [Return (Constant 0)]
-        Some <| Function (name, parameters, instructions)
+        Some <| Function (name, true, parameters, instructions)
     
-let fromProgram (C.Program functions) =
+let fromTopFileDeclaration declaration =
+    match declaration with
+    | VariableDecl _ -> None
+    | FunctionDecl func ->  fromFunction func
+
+let fromSymbolTable (symbolTable:SymbolTable) =
+    let fromSymbolEntry (name, symbol) =
+        match symbol.attribute with
+        | StaticAttr (init, globl) ->
+            match init with
+            | Initial i -> Some (StaticVariable (name, globl, i))
+            | Tentative -> Some (StaticVariable (name, globl, 0))
+            | NoInitializer -> None
+        | _ -> None
+        
+    symbolTable
+    |> Map.toSeq
+    |> Seq.map fromSymbolEntry
+    |> Seq.toList
+
+let fromProgram symbolTable (C.Program functions) =
     functions
-    |> List.map fromFunction
+    |> List.map fromTopFileDeclaration
+    |> (@) (fromSymbolTable symbolTable)
     |> List.choose id
     |> Program

@@ -1,7 +1,7 @@
 module fscc.Assembly
 
-open System.Linq
 open System.Runtime.InteropServices.ComTypes
+open fscc.SemanticAnalysis
 open fscc.Tacky
 
 type Identifier = string
@@ -44,6 +44,7 @@ type Operand =
     | Reg of Reg
     | Pseudo of Identifier
     | Stack of int
+    | Data of Identifier
 
 type Instruction =
     | Mov of {|src: Operand; dst: Operand|}
@@ -62,10 +63,11 @@ type Instruction =
     | Push of Operand
     | Call of Identifier
 
-type FunctionDefinition =
-    Function of {|name : Identifier; instructions : Instruction list; |}
+type TopLevel =
+    | Function of name: Identifier * globl: bool * instructions: Instruction list
+    | StaticVariable of name: Identifier * globl: bool * init: int
 
-type Program = Program of FunctionDefinition list
+type Program = Program of TopLevel list
 
 // Helper functions
 
@@ -193,6 +195,7 @@ let fromInstructions instruction =
             | Reg _
             | Imm _ -> [Push assemblyArg]
             | Pseudo _
+            | Data _
             | Stack _ -> [makeMov assemblyArg (Reg AX); Push (Reg AX)]
 
         let movStackArgs =
@@ -231,16 +234,20 @@ let passFunctionParameters parameters =
                 
     passWithState (functionCallRegisters, 16) [] parameters
 
-let fromFunction (Tacky.Function (name, parameters, instructions)) =
-    let copyParameters = passFunctionParameters parameters
-    let bodyInstructions = List.collect fromInstructions instructions
-    Function {| name = name; instructions = copyParameters @ bodyInstructions |}
-    
+let fromTopLevel topLevel=
+    match topLevel with
+    | Tacky.Function (name, globl, parameters, instructions) ->
+        let copyParameters = passFunctionParameters parameters
+        let bodyInstructions = List.collect fromInstructions instructions
+        Function (name, globl, copyParameters @ bodyInstructions)
+    | Tacky.StaticVariable(name, globl, init) ->
+        StaticVariable (name, globl, init)
+
 let fromProgram program =
     match program with
     | Tacky.Program func ->
         func
-        |> List.map fromFunction
+        |> List.map fromTopLevel
         |> Program
     
     
@@ -253,7 +260,7 @@ let fromProgram program =
     The stack size per function is also calculated in this step
 *)
 
-let replacePseudoOperand state operand =
+let replacePseudoOperand state symbolTable operand =
     let map, counter = state
     match operand with
     | Pseudo name ->
@@ -261,39 +268,45 @@ let replacePseudoOperand state operand =
             let stackOperand = Stack <| Map.find name map
             stackOperand, (map, counter)
         else
-            let updatedCounter = counter - 4
-            let pos = updatedCounter
-            let updatedMap = Map.add name pos map
-            let stackOperand = Stack <| pos
-            stackOperand, (updatedMap, updatedCounter)
+            match Map.tryFind name symbolTable with
+            | Some foundSymbol when isStaticSymbol foundSymbol ->
+                let newOperand = Data name
+                newOperand, (map, counter)
+            | _ ->
+                let updatedCounter = counter - 4
+                let pos = updatedCounter
+                let updatedMap = Map.add name pos map
+                let stackOperand = Stack <| pos
+                stackOperand, (updatedMap, updatedCounter)
     | nonPseudo -> nonPseudo, (map, counter)
 
-let updatePseudoInstruction state currentInstr =
+let updatePseudoInstruction state symbolTable currentInstr =
+    let replaceOperand state operand = replacePseudoOperand state symbolTable operand
     match currentInstr with
     | Unary(unaryOperator, operand) ->
-        let updatedOperand, state = replacePseudoOperand state operand
+        let updatedOperand, state = replaceOperand state operand
         Unary (unaryOperator, updatedOperand), state
     | Mov mov ->
-        let updatedSrc, state = replacePseudoOperand state mov.src
-        let updatedDst, state = replacePseudoOperand state mov.dst
+        let updatedSrc, state = replaceOperand state mov.src
+        let updatedDst, state = replaceOperand state mov.dst
         Mov {| src = updatedSrc; dst = updatedDst |}, state
     | Binary(operator, operand1, operand2) ->
-        let updatedOp1, state = replacePseudoOperand state operand1
-        let updatedOp2, state = replacePseudoOperand state operand2
+        let updatedOp1, state = replaceOperand state operand1
+        let updatedOp2, state = replaceOperand state operand2
         Binary (operator, updatedOp1, updatedOp2), state
     | Idiv operand ->
-        let updatedOperand, state = replacePseudoOperand state operand
+        let updatedOperand, state = replaceOperand state operand
         Idiv updatedOperand, state
     | Cdq -> Cdq, state
     | Cmp(src, dst) ->
-        let updatedSrc, state = replacePseudoOperand state src
-        let updatedDst, state = replacePseudoOperand state dst
+        let updatedSrc, state = replaceOperand state src
+        let updatedDst, state = replaceOperand state dst
         Cmp (updatedSrc, updatedDst), state
     | SetCC(cc, operand) ->
-        let updatedOperand, state = replacePseudoOperand state operand
+        let updatedOperand, state = replaceOperand state operand
         SetCC (cc, updatedOperand), state
     | Push operand ->
-        let updatedOperand, state = replacePseudoOperand state operand
+        let updatedOperand, state = replaceOperand state operand
         Push updatedOperand, state
         
     | Jmp _
@@ -304,32 +317,40 @@ let updatePseudoInstruction state currentInstr =
     | DeallocateStack _
     | AllocateStack _ -> currentInstr, state
 
-let updatePseudoInstructions instructions =
+let updatePseudoInstructions symbolTable instructions =
+    let updateInstruction state instruction = updatePseudoInstruction state symbolTable instruction
     let updatedInstructions, (_, stackSize) =
         instructions
-        |> List.mapFold updatePseudoInstruction (Map.empty, 0)
+        |> List.mapFold updateInstruction (Map.empty, 0)
     
     updatedInstructions, -stackSize
         
 
 // ------------------------------------ Update Invalid Instructions ------------------------------------
 
+let isMemoryOperand operand =
+    match operand with
+    | Stack _
+    | Data _ -> true
+    | _ -> false
+
 let updateInvalidInstruction currentInstr =
     match currentInstr with
     | Mov mov ->
         match mov.src, mov.dst with
-        | Stack _, Stack _ ->
+        | memA, memB  when isMemoryOperand memA && isMemoryOperand memB ->
             [makeMov mov.src (Reg R10);
             makeMov (Reg R10) mov.dst]
         | _ -> [currentInstr]
     | Idiv operand ->
         match operand with
         | Stack _
+        | Data _
         | Imm _ -> [makeMov operand (Reg R10); Idiv (Reg R10) ]
         | _ -> [currentInstr]
     | Binary (Mult, src, dst) -> // imul cant use a memory address as destination, so we are using R11
         match dst with
-        | Stack _ ->
+        | mem when isMemoryOperand mem ->
             [makeMov dst (Reg R11);
              Binary (Mult, src, Reg R11)
              makeMov (Reg R11) dst]
@@ -343,13 +364,14 @@ let updateInvalidInstruction currentInstr =
              Binary (shift, Reg CX, dst)]
     | Binary (operation, src, dst) ->
         match src, dst with
-        | Stack _, Stack _ ->
+        | memA, memB when isMemoryOperand memA && isMemoryOperand memB ->
             [makeMov src (Reg R10)
              Binary (operation, Reg R10, dst)]
         | _ -> [currentInstr]
     | Cmp(src, dst) ->
         match src, dst with
-        | Stack _, Stack _ -> [makeMov src (Reg R10); Cmp (Reg R10, dst)] // Can't operate on two memory addresses
+        | memA, memB when isMemoryOperand memA && isMemoryOperand memB ->
+            [makeMov src (Reg R10); Cmp (Reg R10, dst)] // Can't operate on two memory addresses
         | _, Imm x -> [makeMov (Imm x) (Reg R11); Cmp (src, Reg R11)] // The second operand cannot be a constant
         | _, _ -> [currentInstr]
     | Jmp _
@@ -367,21 +389,24 @@ let updateInvalidInstruction currentInstr =
 
 // ------------------------------------------ The actual second Assembly pass -----------------------------------------
 
-let updateFunction (Function func) =
-    let instructions, stackSize = updatePseudoInstructions func.instructions
-    
-    let neededToBeMultipleOf16 = (16 - (stackSize % 16)) % 16
-    let roundedStackSize = stackSize + neededToBeMultipleOf16
-    let updatedInstructions =
-        instructions
-        |> List.collect updateInvalidInstruction
-        |> (@) [AllocateStack roundedStackSize]
+let updateTopLevel symbolTable topLevel =
+    match topLevel with
+    |  Function(name, globl, instructions) ->
+        let instructions, stackSize = updatePseudoInstructions symbolTable instructions
         
-    Function {| func with instructions = updatedInstructions |}
+        let neededToBeMultipleOf16 = (16 - (stackSize % 16)) % 16
+        let roundedStackSize = stackSize + neededToBeMultipleOf16
+        let updatedInstructions =
+            instructions
+            |> List.collect updateInvalidInstruction
+            |> (@) [AllocateStack roundedStackSize]
+            
+        Function (name, globl, updatedInstructions)
+    | StaticVariable _ -> topLevel
 
-let updateProgram (Program functions) =
+let updateProgram symbolTable (Program functions) =
     functions
-    |> List.map updateFunction
+    |> List.map (updateTopLevel symbolTable)
     |> Program
     
 
@@ -425,14 +450,18 @@ let getRegisterAssembly1Byte reg =
 
 let rbp = "%rbp"
 let rsp = "%rsp"
+let rip = "%rip"
 let functionPrologue = "\tpushq %rbp\n\tmovq %rsp, %rbp\n"
 let functionEpilogue = "\tmovq %rbp, %rsp\n\tpopq %rbp\n"
+
+let alignmentDirective = ".align 4"
 
 let getOperandAssembly operand =
     match operand with
     | Imm value -> $"${value}"
     | Reg reg -> getRegisterAssembly reg
     | Stack offset -> $"{offset}({rbp})"
+    | Data name -> $"{name}({rip})"
     | Pseudo name -> failwith $"Found pseudo register {name} during assembly generation. This is a compiler bug!"
 
 let getOperandAssembly8Byte operand =
@@ -467,7 +496,7 @@ let getCCSuffix cc =
 
 let getLabelAssembly (label:Identifier) = $".L{label}"
 
-let emitInstruction assembly instruction =
+let emitInstruction instruction =
     let nextAssembly =
         match instruction with
         | Ret -> functionEpilogue + "\tret\n"
@@ -486,8 +515,6 @@ let emitInstruction assembly instruction =
             let left = getRegisterAssembly1Byte CX
             let right = getOperandAssembly right
             $"\t{instruction} {left}, {right}\n"
-        //| Binary(shift, _, _) when shift = ShiftLeft || shift = ShiftRight ->
-        //    failwith "Shift instruction with non-CX Register as source. This should not happen"
         | Binary(operator, left, right) ->
             let instruction = binaryOperatorAssembly operator
             let left = getOperandAssembly left
@@ -520,17 +547,24 @@ let emitInstruction assembly instruction =
             $"\tpushq {operand}\n"
         | Call label -> $"\tcall {label}\n"
     
-    assembly + nextAssembly
+    nextAssembly
 
-let emitFunction (Function func) =
-    let name = func.name
-    let newAssembly = $"\t.globl {name}\n{name}:\n" + functionPrologue
-    func.instructions
-    |> List.fold emitInstruction newAssembly
-    |> fun str -> str + "\n"
+let emitTopLevel topLevel =
+    let globlDirective globl name = if globl then $"\t.globl {name}\n" else ""
+    match topLevel with
+    | Function(name, globl, instructions) ->
+        let functionHeader = $"{globlDirective globl name}\t.text\n{name}:\n" + functionPrologue
+        instructions
+        |> List.map emitInstruction
+        |> String.concat ""
+        |> fun str -> functionHeader + str + "\n"
+    | StaticVariable(name, globl, 0) ->
+        $"{globlDirective globl name}\n\t.bss\n\t{alignmentDirective}\n{name}:\n\t.zero 4\n\n"
+    | StaticVariable(name, globl, init) ->
+        $"{globlDirective globl name}\n\t.data\n\t{alignmentDirective}\n{name}:\n\t.long {init}\n\n"
 
 let emitProgram (Program functions) =
     functions
-    |> List.map emitFunction
+    |> List.map emitTopLevel
     |> fun x -> x @ [".section .note.GNU-stack,\"\",@progbits\n"]
     |> String.concat ""

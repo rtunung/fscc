@@ -2,6 +2,7 @@
 open System.IO
 open System.Linq
 open System.Diagnostics
+open FsToolkit.ErrorHandling
 open fscc
 
 let args = Environment.GetCommandLineArgs ()
@@ -61,19 +62,25 @@ if onlyValidate then
     printResult validatedResult
     exit 0
     
-let tackyResult =
-    validatedResult
-    |> Result.map Tacky.fromProgram
+let tackyResult = result {
+    let! cProgram, symbolTable = validatedResult
+    return Tacky.fromProgram symbolTable cProgram
+    }
     
 if onlyTacky then
     printResult tackyResult
     exit 0
 
-let assemblyResult =
-    tackyResult
-    |> Result.map Assembly.fromProgram
-    |> Result.map Assembly.updateProgram
-
+let assemblyResult = result {
+    let! _, symbolTable = validatedResult
+    let! tacky = tackyResult
+    let code =
+        tacky
+        |> Assembly.fromProgram
+        |> Assembly.updateProgram symbolTable
+    return code
+    }
+    
 if onlyCodeGen then
     printResult assemblyResult
     exit 0

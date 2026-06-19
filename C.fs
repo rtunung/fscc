@@ -66,7 +66,7 @@ type Declaration =
     | FunctionDecl of FunctionDeclaration
     
 and VariableDeclaration =
-    Variable of Identifier * Expression option * StorageClass option
+    Variable of Identifier * init: Expression option * StorageClass option
 
 and Statement =
     | Return of Expression
@@ -80,7 +80,7 @@ and Statement =
     | DummyBreak
     | DummyContinue
     | DummyWhile of condition: Expression * body: Statement
-    | DummyDoWhile of  body: Statement * condition: Expression
+    | DummyDoWhile of body: Statement * condition: Expression
     | DummyFor of ForInit * condition: Expression option * post: Expression option * body: Statement 
     
     // Created from dummy statements in the semantic analysis stage
@@ -249,7 +249,7 @@ let parseTypeAndStorageClass specifierList =
     let thisStorageClass =
         match storageClasses with
         | [ oneClass ] -> oneClass |> getStorageClass |> Some |> Ok
-        | [] -> Ok (None)
+        | [] -> Ok None
         | _ :: _ -> Error <| Message "Multiple storage class specifiers were used"
         
     result {

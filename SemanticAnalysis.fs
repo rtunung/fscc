@@ -4,6 +4,29 @@ open C
 open Misc
 open FsToolkit.ErrorHandling
 
+// ---------------------------------------- Symbol Table Types -----------------------------------------------------
+type InitialValue =
+    | Tentative
+    | Initial of int
+    | NoInitializer
+
+type IdentifierAttributes =
+    | FunAttr of defined: bool * globl: bool
+    | StaticAttr of init: InitialValue * globl: bool
+    | LocalAttr
+
+type Symbol = {
+        attribute: IdentifierAttributes
+        sType: Type
+    }
+
+type SymbolTable = Map<Identifier, Symbol>
+
+let isStaticSymbol symbol =
+    match symbol.attribute with
+    | StaticAttr _ -> true
+    | _ -> false
+
 // -------------------------------------- Helper Functions -----------------------------------------------------------
 
 let private isIncrementDecrement op =
@@ -312,23 +335,6 @@ let resolveProgram (Program declarations) =
 
 // ------------------------------------------------- Type Checking ---------------------------------------------------
 
-type InitialValue =
-    | Tentative
-    | Initial of int
-    | NoInitializer
-
-type IdentifierAttributes =
-    | FunAttr of defined: bool * globl: bool
-    | StaticAttr of init: InitialValue * globl: bool
-    | LocalAttr
-
-type Symbol = {
-        attribute: IdentifierAttributes
-        sType: Type
-    }
-
-type SymbolTable = Map<Identifier, Symbol>
-
 let getGlobalFromAttribute  attr =
     match attr with
     | FunAttr (_, globl) -> globl
@@ -589,10 +595,6 @@ let typeCheckFileVariableDeclaration symbolTable declaration =
             
             let! newGlobl =
                 if storageClass = Some Extern then Ok oldGlobl
-                // Something is going wrong here.
-                // This should be uncommented to catch potential errors.
-                // But doing so makes a test case fail.
-                // TODO: look into this? Or maybe this is fine?
                 else if oldGlobl <> globl then Error <| Message "Conflicting variable linkage"
                 else Ok globl
             
@@ -620,7 +622,7 @@ let rec typeCheckFileDeclaration symbolTable declaration =
     | VariableDecl decl -> typeCheckFileVariableDeclaration symbolTable decl
     | FunctionDecl decl -> typeCheckFileFunctionDeclaration symbolTable decl
 
-let typeCheckProgram (Program functions) =
+let typeCheckProgram (Program declarations) =
     let rec loop state functions =
         match functions with
         | [] -> Ok state
@@ -630,8 +632,7 @@ let typeCheckProgram (Program functions) =
             | Error error -> Error error
             | Ok state -> loop state rest
             
-    loop Map.empty functions
-
+    loop Map.empty declarations
 // ---------------------------------------------- Resolve Goto Labels ------------------------------------------------
 
 (*
@@ -1026,7 +1027,7 @@ let resolveLoopProgram (Program functions) =
 
 let semanticAnalysis program=
     result {
-        let! program, linkageSet = resolveProgram program
+        let! program, _ = resolveProgram program
         let! symbolTable = typeCheckProgram program
 
         let! program = 
@@ -1035,7 +1036,7 @@ let semanticAnalysis program=
             |> Result.bind resolveSwitchProgram
             |> Result.bind resolveLoopProgram 
 
-        return program, (symbolTable, linkageSet)
+        return program, symbolTable
         }
     
     
