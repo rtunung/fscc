@@ -21,12 +21,14 @@ let private isIncrementDecrement op =
     However, identifiers with external linkage need to keep their original name, otherwise linking will fail.
     To achieve this, we need to track a state as we resolve the new identifier names.
     The state has the following members:
-    - identifierMap: A map from in C defined variable identifiers to globally unique identifiers
+    - identifierMap: A map from in C defined identifiers to globally unique identifiers
+                     This table is also used to store linkage information
     - scopeSet: A set that contains all variable names that are declared in the current scope (Does not include parent or child blocks)
         -> Detect multiple declarations in the same block.
         -> Allows for shadowing of variable identifiers once you go into a child block
    - linkageSet: A set that tracks which identifiers are externally linked
 *)
+
 
 let rec resolveExpression expr (identifierMap:Map<Identifier, Identifier>) =
     match expr with
@@ -77,65 +79,65 @@ let rec resolveExpression expr (identifierMap:Map<Identifier, Identifier>) =
 
 let rec resolveStatement statement (identifierMap, scopeSet, linkageSet) =
     match statement with
-    | Null -> Ok Null
+    | Null -> Ok (Null, linkageSet)
     | Return expr -> result {
         let! expr = resolveExpression expr identifierMap
-        return Return expr
+        return Return expr, linkageSet
         }
     | Expression expr ->  result {
         let! expr = resolveExpression expr identifierMap
-        return Expression expr
+        return Expression expr, linkageSet
         }
     | If (cond, ifBody, elseBody) -> result {
         let! cond = resolveExpression cond identifierMap
-        let! ifBody = resolveStatement ifBody (identifierMap, scopeSet, linkageSet)
+        let! ifBody, linkageSet = resolveStatement ifBody (identifierMap, scopeSet, linkageSet)
         match elseBody with
-        | None -> return If (cond, ifBody, None)
+        | None -> return If (cond, ifBody, None), linkageSet
         | Some elseBody ->
-            let! elseBody = resolveStatement elseBody (identifierMap, scopeSet, linkageSet)
-            return If (cond, ifBody, Some elseBody)
+            let! elseBody, linkageSet = resolveStatement elseBody (identifierMap, scopeSet, linkageSet)
+            return If (cond, ifBody, Some elseBody), linkageSet
             }
     | Label (name, labelStatement) -> result {
-        let! labelStatement = resolveStatement labelStatement (identifierMap, scopeSet, linkageSet)
-        return Label (name, labelStatement)
+        let! labelStatement, linkageSet = resolveStatement labelStatement (identifierMap, scopeSet, linkageSet)
+        return Label (name, labelStatement), linkageSet
         }
-    | Goto _ -> Ok statement
+    | Goto _ -> Ok (statement, linkageSet)
     | Compound block ->  result {
-        let! newBlock = resolveBlock block (identifierMap, Set.empty, linkageSet)
-        return Compound newBlock
+        let! newBlock, linkageSet = resolveBlock block (identifierMap, Set.empty, linkageSet)
+        return Compound newBlock, linkageSet
         }
-    | DummyBreak -> Ok statement
-    | DummyContinue -> Ok statement
+    | DummyBreak -> Ok (statement, linkageSet)
+    | DummyContinue -> Ok (statement, linkageSet)
     | DummyWhile(cond, body) -> result {
         let! resolvedCond = resolveExpression cond identifierMap
-        let! resolvedBody = resolveStatement body (identifierMap, scopeSet, linkageSet)
-        return DummyWhile (resolvedCond, resolvedBody)
+        let! resolvedBody, linkageSet = resolveStatement body (identifierMap, scopeSet, linkageSet)
+        return DummyWhile (resolvedCond, resolvedBody), linkageSet
         }
     | DummyDoWhile(body, cond) -> result {
-        let! resolvedBody = resolveStatement body (identifierMap, scopeSet, linkageSet)
+        let! resolvedBody, linkageSet = resolveStatement body (identifierMap, scopeSet, linkageSet)
         let! resolvedCond = resolveExpression cond identifierMap
-        return DummyDoWhile (resolvedBody, resolvedCond)
+        return DummyDoWhile (resolvedBody, resolvedCond), linkageSet
         }
     | DummyFor(init, cond, post, body) -> result {
         let! resolvedInit, (identifierMap, scopeSet, linkageSet) = resolveForInit init (identifierMap, linkageSet)
         let! resolvedCond = resolveOptionalExpression cond identifierMap
         let! resolvedPost = resolveOptionalExpression post identifierMap
-        let! resolvedBody = resolveStatement body (identifierMap, scopeSet, linkageSet)
-        return DummyFor (resolvedInit, resolvedCond, resolvedPost, resolvedBody)
+        let! resolvedBody, linkageSet = resolveStatement body (identifierMap, scopeSet, linkageSet)
+        return DummyFor (resolvedInit, resolvedCond, resolvedPost, resolvedBody), linkageSet
         }
     | DummySwitch (argument, body) -> result {
         let! resolvedArgument = resolveExpression argument identifierMap
-        let! resolvedBody = resolveStatement body (identifierMap, scopeSet, linkageSet)
-        return DummySwitch (resolvedArgument,  resolvedBody)
+        let! resolvedBody, linkageSet = resolveStatement body (identifierMap, scopeSet, linkageSet)
+        return DummySwitch (resolvedArgument,  resolvedBody), linkageSet
         }
     | DummyCase (case, body) -> result {
         let! resolvedCase = resolveExpression case identifierMap
-        let! resolvedBody = resolveStatement body (identifierMap, scopeSet, linkageSet)
-        return DummyCase (resolvedCase, resolvedBody)
+        let! resolvedBody, linkageSet = resolveStatement body (identifierMap, scopeSet, linkageSet)
+        return DummyCase (resolvedCase, resolvedBody), linkageSet
         }
     | DummyDefault body -> result {
-        let! resolvedBody = resolveStatement body (identifierMap, scopeSet, linkageSet)
-        return DummyDefault resolvedBody
+        let! resolvedBody, linkageSet = resolveStatement body (identifierMap, scopeSet, linkageSet)
+        return DummyDefault resolvedBody, linkageSet
         }
         
     | LoopBreak _
@@ -163,56 +165,77 @@ and resolveForInit init (identifierMap, linkageSet)=
         return InitExpression (Some resolvedExpr), (identifierMap, Set.empty, linkageSet)
         }
     | InitDeclaration declaration -> result {
-        let! resolvedDecl, state = resolveVariableDeclaration declaration (identifierMap, Set.empty, linkageSet)
+        let! resolvedDecl, state = resolveLocalVariableDeclaration declaration (identifierMap, Set.empty, linkageSet)
         return InitDeclaration resolvedDecl, state
         }
 
 and resolveBlockItem item (identifierMap, scopeSet, linkageSet) =
     match item with
     | Declaration (VariableDecl declaration) -> result {
-        let! resolvedDecl, state = resolveVariableDeclaration declaration (identifierMap, scopeSet, linkageSet)
+        let! resolvedDecl, state = resolveLocalVariableDeclaration declaration (identifierMap, scopeSet, linkageSet)
         return Declaration (VariableDecl resolvedDecl), state
         }
-    | Declaration (FunctionDecl (Function (_, _, None) as func)) -> result {
+    | Declaration (FunctionDecl (Function (_, _, None, _) as func)) -> result {
         let! resolvedFunc, state = resolveFunctionDeclaration func (identifierMap, scopeSet, linkageSet)
         return Declaration (FunctionDecl resolvedFunc), state
         }
-    | Declaration (FunctionDecl (Function (name, _, _))) -> Error <| Message $"Nested function definition are invalid. Function: {name}" 
+    | Declaration (FunctionDecl (Function (name, _, _, _))) -> Error <| Message $"Nested function definition are invalid. Function: {name}" 
     | Statement statement -> result {
-        let! statement = resolveStatement statement (identifierMap, scopeSet, linkageSet)
+        let! statement, linkageSet = resolveStatement statement (identifierMap, scopeSet, linkageSet)
         return Statement statement, (identifierMap, scopeSet, linkageSet)
         }
     
 and resolveBlock items (identifierMap, scopeSet, linkageSet) =
-    let rec loop items (identifierMap, scopeSet, linkageSet) acc =
+    let rec loop items (_,_,linkageSet as state) acc =
         match items with
-        | [] -> Ok acc
+        | [] -> Ok (acc, linkageSet)
         | item :: rest ->
-            let resolvedItem = resolveBlockItem item (identifierMap, scopeSet, linkageSet)
+            let resolvedItem = resolveBlockItem item state
             match resolvedItem with
             | Error error -> Error error
-            | Ok (newItem, (variableMap, scopeSet, linkageSet)) -> loop rest (variableMap, scopeSet, linkageSet) (acc @ [newItem])
+            | Ok (newItem, state) -> loop rest state (acc @ [newItem])
     
     loop items (identifierMap, scopeSet, linkageSet) []
    
-and resolveVariableDeclaration (Variable (ident, expr)) (identifierMap, scopeSet, linkageSet) =
+   
+// Resolve local variable declarations opposed to file scope declarations
+and resolveLocalVariableDeclaration (Variable (ident, expr, storageClass)) (identifierMap, scopeSet, linkageSet) =
+    
+    let resolveVariable () =
+        match storageClass with
+        | Some Extern ->
+            let identifierMap = Map.add ident ident identifierMap
+            let scopeSet = Set.add ident scopeSet
+            let linkageSet = Set.add ident linkageSet
+            Ok (Variable (ident, expr, storageClass), (identifierMap, scopeSet, linkageSet))
+        | _ ->
+            let uniqueName = Identifier (getTemporaryName ())
+            let identifierMap = Map.add ident uniqueName identifierMap
+            let blockSet = Set.add ident scopeSet
+    
+            let expr = Option.map (fun x -> resolveExpression x identifierMap) expr
+            match expr with
+            | None -> Ok (Variable(uniqueName, None, storageClass), (identifierMap, blockSet, linkageSet))
+            | Some (Error error) -> Error error
+            | Some (Ok expr) -> Ok (Variable(uniqueName, Some expr, storageClass), (identifierMap, blockSet, linkageSet))
+    
     if Set.contains ident scopeSet then
-        Error <| Message $"Duplicate variable declaration of {ident}"
+        let hasLinkage =
+            Map.find ident identifierMap
+            |> fun x -> Set.contains x linkageSet
+        if not (hasLinkage && storageClass = Some Extern) then
+            Error <| Message $"Duplicate local variable declaration of {ident}"
+            else
+                resolveVariable ()
     else
-        let uniqueName = Identifier (getTemporaryName ())
-        let identifierMap = Map.add ident uniqueName identifierMap
-        let blockSet = Set.add ident scopeSet
-
-        let expr = Option.map (fun x -> resolveExpression x identifierMap) expr
-        match expr with
-        | None -> Ok (Variable(uniqueName, None), (identifierMap, blockSet, linkageSet))
-        | Some (Error error) -> Error error
-        | Some (Ok expr) -> Ok (Variable(uniqueName, Some expr), (identifierMap, blockSet, linkageSet))
+        resolveVariable ()
+       
     
 and resolveFunctionDeclaration (Function (name, parameters, body, storageClass)) (identifierMap, scopeSet, linkageSet) =
     let checkForDuplicate =
         if Map.containsKey name identifierMap then
-            if Set.contains name scopeSet && not (Set.contains name linkageSet) then
+            let hasLinkage = Set.contains name linkageSet
+            if Set.contains name scopeSet && not hasLinkage then
                 Error <| Message $"Duplicate declaration of {name}"
             else
                 Ok ()
@@ -226,6 +249,7 @@ and resolveFunctionDeclaration (Function (name, parameters, body, storageClass))
             let tmp = Identifier (getTemporaryName ())
             let paramSet = Set.add parameter paramSet
             Ok (tmp, (Map.add parameter tmp identifierMap, paramSet))
+            
     let rec resolveParameters state parameters acc =
         match parameters with
         | [] -> Ok (acc, state)
@@ -236,7 +260,7 @@ and resolveFunctionDeclaration (Function (name, parameters, body, storageClass))
             | Ok (resolvedPara, state) -> resolveParameters state rest (acc @ [resolvedPara])
     
     result {
-        let! () = checkForDuplicate
+        do! checkForDuplicate
         let identifierMap = Map.add name name identifierMap
         let scopeSet = Set.add name scopeSet
         let linkageSet = Set.add name linkageSet
@@ -248,159 +272,201 @@ and resolveFunctionDeclaration (Function (name, parameters, body, storageClass))
             |> Option.map (fun x -> resolveBlock x (newIdentifierMap, newScopeSet, linkageSet))
             |> Option.sequenceResult
         
-        return Function (name, resolvedParameters, resolvedBody, storageClass), (identifierMap, scopeSet, linkageSet)
+        let newBody, linkageSet =
+            match resolvedBody with
+            | None -> None, linkageSet
+            | Some (blck, linkageSet) -> Some blck, linkageSet 
+        
+        return Function (name, resolvedParameters, newBody, storageClass), (identifierMap, scopeSet, linkageSet)
     }
     
-let resolveProgram (Program functions) =
-    let rec resolveFunctions state funcs acc =
-        match funcs with
-        | [] -> Ok acc
+let resolveTopDeclarations declaration state =
+    match declaration with
+    // File Scope Variable Declaration
+    | VariableDecl (Variable(identifier, _, _)) as decl ->
+        let identifierMap, scopeSet, linkageSet = state
+        let identifierMap = Map.add identifier identifier identifierMap
+        let scopeSet = Set.add identifier scopeSet
+        let linkageSet = Set.add identifier linkageSet
+        Ok (decl, (identifierMap, scopeSet, linkageSet))
+    | FunctionDecl functionDeclaration -> result {
+        let! decl, state = resolveFunctionDeclaration functionDeclaration state
+        return FunctionDecl decl, state
+        }
+    
+let resolveProgram (Program declarations) =
+    let rec resolveFile state decls acc =
+        match decls with
+        | [] -> Ok (acc, state)
         | func :: rest ->
-            let result = resolveFunctionDeclaration func state
+            let result = resolveTopDeclarations func state
             match result with
             | Error error -> Error error
-            | Ok (resolvedFunc, state) -> resolveFunctions state rest (acc @ [resolvedFunc])
+            | Ok (resolvedFunc, state) -> resolveFile state rest (acc @ [resolvedFunc])
     
-    resolveFunctions (Map.empty, Set.empty, Set.empty) functions []
-    |> Result.map Program
+    result {
+        let! newDecl, state = resolveFile (Map.empty, Set.empty, Set.empty) declarations []
+        let _, _, linkageSet = state
+        return Program newDecl, linkageSet
+    }
 
 // ------------------------------------------------- Type Checking ---------------------------------------------------
 
-let rec typeCheckExpression symbolsMap expr =
+type InitialValue =
+    | Tentative
+    | Initial of int
+    | NoInitializer
+
+type IdentifierAttributes =
+    | FunAttr of defined: bool * globl: bool
+    | StaticAttr of init: InitialValue * globl: bool
+    | LocalAttr
+
+type Symbol = {
+        attribute: IdentifierAttributes
+        sType: Type
+    }
+
+type SymbolTable = Map<Identifier, Symbol>
+
+let getGlobalFromAttribute  attr =
+    match attr with
+    | FunAttr (_, globl) -> globl
+    | StaticAttr (_, globl) -> globl
+    | LocalAttr -> false
+
+let rec typeCheckExpression symbolTable expr =
     let typeCheckExpressionList arg =
             arg
-            |> Seq.map (typeCheckExpression symbolsMap)
+            |> Seq.map (typeCheckExpression symbolTable)
             |> Seq.sequenceResultM
             |> Result.map (Seq.iter (fun _ -> ()))
     
     match expr with
     | Var varName ->
-        let varType = Map.find varName symbolsMap
-        match varType with
+        let symbol = Map.find varName symbolTable
+        match symbol.sType with
         | Int -> Ok ()
         | _ -> Error <| Message $"Function '{varName}' used as variable"
     | FunctionCall (funcName, arguments) ->
-        let funcType = Map.find funcName symbolsMap
-        match funcType with
+        let symbol = Map.find funcName symbolTable
+        match symbol.sType with
         | Int -> Error <| Message $"Variable '{funcName}' used as function"
         | FunType x when x = List.length arguments -> typeCheckExpressionList arguments
         | FunType _ -> Error <| Message $"Function '{funcName}' called with incorrect number of arguments"
     | Assignment(lvalue, rvalue) -> typeCheckExpressionList [lvalue; rvalue]
-    | Unary(_, expression) -> typeCheckExpression symbolsMap expression
+    | Unary(_, expression) -> typeCheckExpression symbolTable expression
     | Binary(_, left, right) -> typeCheckExpressionList [left; right]
     | Conditional(condition, middle, right) -> typeCheckExpressionList [condition; middle; right]
     | Constant _ -> Ok ()
 
-let typeCheckOptionalExpression symbolsMap optExpr =
+let typeCheckOptionalExpression symbolTable optExpr =
     match optExpr with
     | None -> Ok ()
-    | Some expr -> typeCheckExpression symbolsMap expr
+    | Some expr -> typeCheckExpression symbolTable expr
 
-let rec typeCheckVariableDeclaration symbolsMap (Variable (name, init)) =
-    let symbolsMap = Map.add name Int symbolsMap
-    match init with
-    | None -> Ok symbolsMap
-    | Some expr -> result {
-        let! () = typeCheckExpression symbolsMap expr
-        return symbolsMap
-        }
+let rec typeCheckLocalVariableDeclaration symbolTable func  =
+    let (Variable (name, init, storageClass)) = func
 
-and typeCheckFunctionDeclaration (symbolsMap, funcDefinedSet) (Function (name, parameters, body)) =
-    let funcType = FunType <| List.length parameters
-    
-    let validateDeclaration =
-        if Map.containsKey name symbolsMap then
-            let oldType = Map.find name symbolsMap
-            if oldType <> funcType then
-                Error <| Message $"Incompatible function declaration for function '{name}'\nOld type: {oldType}\nnewType: {funcType}"
-            else
-            let alreadyDefined = Set.contains name funcDefinedSet
-            if alreadyDefined && Option.isSome body then
-                Error <| Message $"Multiple definitions for function '{name}'"
+    match storageClass with
+    | Some Extern -> result {
+        do! if init.IsSome 
+            then Error <| Message "Initializer on local extern variable declaration"
             else Ok ()
-        else Ok ()
-        
-    result {
-        let! () = validateDeclaration
-        
-        let symbolsMap = Map.add name funcType symbolsMap
-        
-        let registerParameter state parameter =
-            Map.add parameter Int state
-        let symbolsMap = List.fold registerParameter symbolsMap parameters
-        let funcDefinedSet =
-            match body with
-            | None -> funcDefinedSet
-            | Some _ -> Set.add name funcDefinedSet
+
+        let oldDecl = Map.tryFind name symbolTable
+        match oldDecl with
+        | Some {sType = t} when t <> Int -> return! Error <| Message "Function redeclared as variable"
+        | Some _ -> return symbolTable
+        | _ ->
+            let attrs = StaticAttr(NoInitializer, true)
+            return Map.add name {sType = Int; attribute = attrs} symbolTable
             
-        match body with
-        | None -> return symbolsMap, funcDefinedSet
-        | Some block ->
-            let! state = typeCheckBlock (symbolsMap, funcDefinedSet) block
-            return state
-    }
+        }
+    | Some Static -> result {
+        let! initial =
+            match init with
+            | Some (Constant i) -> Ok (Initial i)
+            | None -> Ok (Initial 0)
+            | _ -> Error <| Message "Non-constant initializer on local static variable"
+        
+        let attrs = StaticAttr(initial, false)
+        return Map.add name {sType = Int; attribute = attrs} symbolTable
+        }
+    | None -> result {
+        let symbolTable = Map.add name {sType = Int; attribute = LocalAttr} symbolTable
+        do! match init with
+            | Some body -> typeCheckExpression symbolTable body
+            | None -> Ok ()
 
-and typeCheckForInit (symbolsMap, funcDefinedSet as state) init =
+        return symbolTable
+        }
+    
+
+and typeCheckForInit symbolTable init =
     match init with
-    | InitExpression None -> Ok state
+    | InitExpression None -> Ok symbolTable
     | InitExpression (Some expr) -> result {
-        let! () = typeCheckExpression symbolsMap expr
-        return state
+        do! typeCheckExpression symbolTable expr
+        return symbolTable
         }
-    | InitDeclaration varDecl -> result {
-        let! symbolsMap = typeCheckVariableDeclaration symbolsMap varDecl
-        return symbolsMap, funcDefinedSet
+    | InitDeclaration (Variable(_, _, storageClass) as varDecl) -> result {
+        do! match storageClass with
+            | Some _ -> Error <| Message "Variable declared inside a for-header cannot have a storage class specification"
+            | None -> Ok ()
+        let! symbolTable = typeCheckLocalVariableDeclaration symbolTable varDecl
+        return symbolTable
         }
 
-and typeCheckStatement (symbolsMap, _ as state) statement =
+and typeCheckStatement symbolTable statement =
     match statement with
     | Return expr -> result {
-        let! () = typeCheckExpression symbolsMap expr
-        return state
+        do! typeCheckExpression symbolTable expr
+        return symbolTable
         }
     | Expression expression -> result {
-        let! () = typeCheckExpression symbolsMap expression
-        return state
+        do! typeCheckExpression symbolTable expression
+        return symbolTable
         }
     | If(condition, body, elseBody) -> result {
-        let! () = typeCheckExpression symbolsMap condition
-        let! state = typeCheckStatement state body
+        do! typeCheckExpression symbolTable condition
+        let! symbolTable = typeCheckStatement symbolTable body
         match elseBody with
-        | None -> return state
+        | None -> return symbolTable
         | Some elseStatement ->
-            let! state = typeCheckStatement state elseStatement
-            return state
+            let! symbolTable = typeCheckStatement symbolTable elseStatement
+            return symbolTable
         }
-    | Label(_, statement) -> typeCheckStatement state statement
-    | Compound block -> typeCheckBlock state block
+    | Label(_, statement) -> typeCheckStatement symbolTable statement
+    | Compound block -> typeCheckBlock symbolTable block
     | DummyWhile(condition, body) -> result {
-        let! () = typeCheckExpression symbolsMap condition
-        return! typeCheckStatement state body
+        do! typeCheckExpression symbolTable condition
+        return! typeCheckStatement symbolTable body
         }
     | DummyDoWhile(body, condition) -> result {
-        let! () = typeCheckExpression symbolsMap condition
-        return! typeCheckStatement state body
+        do! typeCheckExpression symbolTable condition
+        return! typeCheckStatement symbolTable body
         }
     | DummyFor(forInit, condition, post, body) -> result {
-        let! symbolsMap, _ as state = typeCheckForInit state forInit
-        let! () = typeCheckOptionalExpression symbolsMap condition
-        let! () = typeCheckOptionalExpression symbolsMap post
-        return! typeCheckStatement state body
+        let! symbolTable = typeCheckForInit symbolTable forInit
+        do! typeCheckOptionalExpression symbolTable condition
+        do! typeCheckOptionalExpression symbolTable post
+        return! typeCheckStatement symbolTable body
         }
     | DummySwitch(argument, body) -> result {
-        let! () = typeCheckExpression symbolsMap argument
-        return! typeCheckStatement state body
+        do! typeCheckExpression symbolTable argument
+        return! typeCheckStatement symbolTable body
         }
     | DummyCase(case, body) -> result {
-        let! () = typeCheckExpression symbolsMap case
-        return! typeCheckStatement state body
+        do! typeCheckExpression symbolTable case
+        return! typeCheckStatement symbolTable body
         }
-    | DummyDefault body -> typeCheckStatement state body
+    | DummyDefault body -> typeCheckStatement symbolTable body
     
     | Goto _
     | DummyBreak
     | DummyContinue
-    | Null -> Ok state
+    | Null -> Ok symbolTable
     
     | LoopBreak _
     | Continue _
@@ -413,16 +479,16 @@ and typeCheckStatement (symbolsMap, _ as state) statement =
     | Default _
     | SwitchBreak _ -> failwith "Switch labeling has to be performed after type checking"
 
-and typeCheckBlockItem (symbolsMap, funcDefinedSet as state) item =
+and typeCheckBlockItem symbolTable item =
     match item with
     | Declaration (VariableDecl var) -> result {
-        let! symbolsMap = typeCheckVariableDeclaration symbolsMap var
-        return symbolsMap, funcDefinedSet
+        let! symbolTable = typeCheckLocalVariableDeclaration symbolTable var
+        return symbolTable
         }
-    | Declaration (FunctionDecl func) -> typeCheckFunctionDeclaration state func
-    | Statement statement -> typeCheckStatement state statement
+    | Declaration (FunctionDecl func) -> typeCheckLocalFunctionDeclaration symbolTable func
+    | Statement statement -> typeCheckStatement symbolTable statement
     
-and typeCheckBlock state block =
+and typeCheckBlock symbolTable block =
     let rec loop state items =
         match items with
         | [] -> Ok state
@@ -432,19 +498,139 @@ and typeCheckBlock state block =
             | Error error -> Error error
             | Ok state -> loop state rest
     
-    loop state block
+    loop symbolTable block
+
+and typeCheckLocalFunctionDeclaration symbolMap func  =
+    typeCheckFunctionDeclaration true symbolMap func
+
+and typeCheckFileFunctionDeclaration symbolMap func =
+    typeCheckFunctionDeclaration false symbolMap func
+
+and typeCheckFunctionDeclaration inBlock (symbolTable: Map<Identifier,Symbol>) func=
+    let (Function (name, parameters, body, storageClass)) = func
     
+    let funcType = FunType <| List.length parameters
+    let globl = storageClass <> Some Static
+
+    let getOldEntry =
+        if Map.containsKey name symbolTable then
+            let oldEntry = Map.find name symbolTable
+            if oldEntry.sType <> funcType then
+                Error <| Message $"Incompatible function declaration for function '{name}'\nOld type: {oldEntry.sType}\nnewType: {funcType}"
+            else
+            let alreadyDefined =
+                match oldEntry.attribute with
+                | FunAttr (defined, _) -> defined
+                | _ -> false
+            if alreadyDefined && Option.isSome body then
+                Error <| Message $"Multiple definitions for function '{name}'"
+            else Ok ((Some oldEntry), alreadyDefined)
+        else Ok (None, false)
+        
+    result {
+        // Check if static storage class in block
+        do! if inBlock && storageClass = Some Static
+            then Error <| Message "Static function declarations are not allowed in block-scopes"
+            else Ok ()
+        
+        let! oldEntry, alreadyDefined = getOldEntry
+        let! globl =
+            match oldEntry with
+            | None -> Ok globl
+            | Some entry ->
+                let oldGlobl = getGlobalFromAttribute entry.attribute
+                if oldGlobl && storageClass = Some Static
+                then Error <| Message "Static function declaration follows non-static"
+                else Ok oldGlobl
+        
+        let defined =
+            match body with
+            | None -> false
+            | Some _ -> true
+        let attrs = FunAttr(defined || alreadyDefined, globl)
+        let symbolTable = Map.add name { attribute = attrs; sType = funcType} symbolTable
+        
+        let registerParameter state parameter =
+            Map.add parameter {sType = Int; attribute = LocalAttr } state
+        let symbolTable = List.fold registerParameter symbolTable parameters
+            
+        match body with
+        | None -> return symbolTable
+        | Some block ->
+            let! symbolTable = typeCheckBlock symbolTable block
+            return symbolTable
+    }
+
+let typeCheckFileVariableDeclaration symbolTable declaration =
+    let (Variable (ident, init, storageClass)) = declaration
+    let initializer () = 
+        match init with
+        | Some (Constant i) -> Ok <| Initial i
+        | None ->
+            if storageClass = Some Extern
+            then Ok NoInitializer
+            else Ok Tentative
+        | _ -> Error <| Message "Non-constant initializer"
+    
+    let globl = storageClass <> Some Static
+    
+    if Map.containsKey ident symbolTable then
+        let oldDecl = Map.find ident symbolTable
+        result {
+            do! if oldDecl.sType <> Int
+                then Error <| Message "Hello"
+                else Ok ()
+                                
+            let oldGlobl =
+                match oldDecl.attribute with
+                | FunAttr (_, globl) -> globl
+                | StaticAttr (_, globl) -> globl
+                | _ -> globl
+            
+            let! newGlobl =
+                if storageClass = Some Extern then Ok oldGlobl
+                // Something is going wrong here.
+                // This should be uncommented to catch potential errors.
+                // But doing so makes a test case fail.
+                // TODO: look into this? Or maybe this is fine?
+                else if oldGlobl <> globl then Error <| Message "Conflicting variable linkage"
+                else Ok globl
+            
+            let! initialValue =
+                match oldDecl.attribute with
+                | StaticAttr (Initial i, _) ->
+                    match init with
+                    | Some (Constant _) -> Error <| Message "Conflicting file scope variable definitions"
+                    | _ -> Ok (Initial i)
+                | _ -> Ok Tentative
+        
+            let attrs = StaticAttr (initialValue, newGlobl)
+            return Map.add ident {oldDecl with attribute = attrs; sType = Int} symbolTable
+        }
+    else
+        result {
+            let! initialValue = initializer ()
+            let attrs = StaticAttr (initialValue, globl)
+            return Map.add ident {attribute = attrs; sType = Int;} symbolTable
+        }
+
+
+let rec typeCheckFileDeclaration symbolTable declaration =
+    match declaration with
+    | VariableDecl decl -> typeCheckFileVariableDeclaration symbolTable decl
+    | FunctionDecl decl -> typeCheckFileFunctionDeclaration symbolTable decl
+
 let typeCheckProgram (Program functions) =
     let rec loop state functions =
         match functions with
         | [] -> Ok state
         | func :: rest ->
-            let checkedFunction = typeCheckFunctionDeclaration state func
+            let checkedFunction = typeCheckFileDeclaration state func
             match checkedFunction with
             | Error error -> Error error
             | Ok state -> loop state rest
             
-    loop (Map.empty, Set.empty) functions
+    loop Map.empty functions
 
 // ---------------------------------------------- Resolve Goto Labels ------------------------------------------------
 
@@ -730,7 +916,9 @@ let resolveSwitchProgram (Program functions) =
 (*
     All loops need to be given a label for codegen.
     Here only the current label needs to be tracked as state
+    - currentLabel: tracks the label of the current loop
 *)
+
 let rec resolveLoopStatement statement currentLabel =
      match statement with
      | DummyBreak ->
@@ -801,8 +989,6 @@ let rec resolveLoopStatement statement currentLabel =
      | DummyCase _
      | DummyDefault _ -> failwith "Loop labeling has to be done after switch labeling"
 
-
-
 and resolveLoopBlockItem currentLabel item =
     match item with
     | Statement statement -> Result.map Statement (resolveLoopStatement statement currentLabel)
@@ -840,11 +1026,16 @@ let resolveLoopProgram (Program functions) =
 
 let semanticAnalysis program=
     result {
-        let! program = resolveProgram program
-        let! state = typeCheckProgram program
-        return program 
+        let! program, linkageSet = resolveProgram program
+        let! symbolTable = typeCheckProgram program
+
+        let! program = 
+            program
+            |> resolveGotoProgram
+            |> Result.bind resolveSwitchProgram
+            |> Result.bind resolveLoopProgram 
+
+        return program, (symbolTable, linkageSet)
         }
-    |> Result.bind resolveGotoProgram
-    |> Result.bind resolveSwitchProgram
-    |> Result.bind resolveLoopProgram
+    
     
