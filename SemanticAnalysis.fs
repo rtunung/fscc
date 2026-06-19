@@ -26,6 +26,13 @@ let isStaticSymbol symbol =
     match symbol.attribute with
     | StaticAttr _ -> true
     | _ -> false
+    
+let getGlobalFromAttribute  attr =
+    match attr with
+    | FunAttr (_, globl) -> globl
+    | StaticAttr (_, globl) -> globl
+    | LocalAttr -> false
+
 
 // -------------------------------------- Helper Functions -----------------------------------------------------------
 
@@ -334,12 +341,6 @@ let resolveProgram (Program declarations) =
     }
 
 // ------------------------------------------------- Type Checking ---------------------------------------------------
-
-let getGlobalFromAttribute  attr =
-    match attr with
-    | FunAttr (_, globl) -> globl
-    | StaticAttr (_, globl) -> globl
-    | LocalAttr -> false
 
 let rec typeCheckExpression symbolTable expr =
     let typeCheckExpressionList arg =

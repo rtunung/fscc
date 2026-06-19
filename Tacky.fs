@@ -296,17 +296,21 @@ and fromBlockItem blockItem =
 
 and fromBlock block = List.collect fromBlockItem block
 
-let fromFunction (C.Function (name, parameters, body, storageClass))=
+let fromFunction symbolTable (C.Function (name, parameters, body, storageClass))=
     match body with
     | None -> None
     | Some block ->
         let instructions = fromBlock block @ [Return (Constant 0)]
-        Some <| Function (name, true, parameters, instructions)
+        let globl =
+            Map.find name symbolTable
+            |> _.attribute
+            |> getGlobalFromAttribute
+        Some <| Function (name, globl, parameters, instructions)
     
-let fromTopFileDeclaration declaration =
+let fromTopFileDeclaration symbolTable declaration =
     match declaration with
     | VariableDecl _ -> None
-    | FunctionDecl func ->  fromFunction func
+    | FunctionDecl func -> fromFunction symbolTable func
 
 let fromSymbolTable (symbolTable:SymbolTable) =
     let fromSymbolEntry (name, symbol) =
@@ -325,7 +329,7 @@ let fromSymbolTable (symbolTable:SymbolTable) =
 
 let fromProgram symbolTable (C.Program functions) =
     functions
-    |> List.map fromTopFileDeclaration
+    |> List.map (fromTopFileDeclaration symbolTable)
     |> (@) (fromSymbolTable symbolTable)
     |> List.choose id
     |> Program
