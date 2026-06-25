@@ -10,8 +10,10 @@ type Lexer = {
 type Token =
     | Identifier of string
     | Constant of int
+    | LongConstant of Int64
     
     | IntKey
+    | LongKey
     | VoidKey
     | ReturnKey
     | IfKey
@@ -127,6 +129,7 @@ let lexConstant lexer =
     let rec loop lex acc = 
         match peek lex with
         | Some chr when Char.IsDigit(chr) -> loop (advance lex) (acc  + string chr)
+        | Some chr when chr = 'l' || chr = 'L' -> Ok (LongConstant <| Int64.Parse acc, advance lex)
         | Some chr when Char.IsLetter(chr) -> Error <| makeLexerError lex $"Unexpected '{chr}' at end of constant '{acc}'"
         | _ -> Ok (Constant <| Int32.Parse acc, lex)
     loop lexer ""
@@ -140,6 +143,7 @@ let lexIdentifierKeyword lexer =
     let token =
         match ident with
         | "int" -> IntKey
+        | "long" -> LongKey
         | "void" -> VoidKey
         | "return" -> ReturnKey
         | "if" -> IfKey
